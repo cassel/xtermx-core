@@ -2,7 +2,7 @@
 <h1 align="center">XTermX</h1>
 <p align="center"><b>Your agents, side by side. Your terminals, wherever you are.</b></p>
 <p align="center">Native Mac terminal · Linux node · Encrypted remote sessions</p>
-<p align="center"><b>English</b> · <a href="README.pt-BR.md">Português</a> · <a href="https://cassel.us">C. Cassel</a></p>
+<p align="center"><b>English</b> · <a href="README.pt-BR.md">Português</a> · <a href="README.es.md">Español</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="https://cassel.us">C. Cassel</a></p>
 
 XTermX is a terminal workspace for people working with coding agents. Run Claude Code, Codex, Gemini CLI and other terminal tools side by side, name each pane, see who needs your attention, and keep your work in view.
 

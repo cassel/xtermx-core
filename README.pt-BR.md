@@ -2,7 +2,7 @@
 <h1 align="center">XTermX</h1>
 <p align="center"><b>Seus agentes lado a lado. Seus terminais onde você estiver.</b></p>
 <p align="center">Terminal nativo para Mac · Node Linux · Sessões remotas criptografadas</p>
-<p align="center"><a href="README.md">English</a> · <b>Português</b> · <a href="https://cassel.us">C. Cassel</a></p>
+<p align="center"><a href="README.md">English</a> · <b>Português</b> · <a href="README.es.md">Español</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="https://cassel.us">C. Cassel</a></p>
 
 XTermX é um ambiente de terminais para quem trabalha com agentes de programação. Rode Claude Code, Codex, Gemini CLI e outras ferramentas lado a lado, dê nomes aos panes e acompanhe quem está trabalhando ou precisa da sua atenção.
 
