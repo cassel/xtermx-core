@@ -167,6 +167,10 @@
     "Server/install.sh": "01d29f3c41e4ad92c579f3e40f75acad1524477924cffb84fcab1deeda38bc17",
     "Server/xtermx.service": "6629df7d893d53adbe8a021044bf4a52b962aba680e200b6bcac028461946783",
     "docs/BUILDING.md": "17d28168c4cc87bf0ee6d53741305d22dff52da41332badaaab35b54d8b375df",
+    "docs/site/index.html": "e1be54f3fbf80e3c4024465cfe4aefb2dbc406748ec0724732225f386cb1e1da",
+    "docs/site/privacy.html": "8736d61a290c145ba18a514ab7b6e8c995238712f6c276d7e4328714211f53d4",
+    "docs/site/style.css": "3ed9847e1f6178ed75991a372fecf5ed6f9f27d8c96d7418c9c3adc63e0a841b",
+    "docs/site/support.html": "72bc810ca925efd9e157edb37e4aa6b38a63c0538889861e307ce543d7eb729d",
     "project.yml": "e095a1352abb28bfc86bdb9de8608f861c59b34afd55682fcf6612525339d775"
   },
   "applications": [
