@@ -87,6 +87,14 @@ public final class HostConnection {
     @ObservationIgnored private var transport: FrameTransport?
     @ObservationIgnored private var sendSealer: FrameSealer?
     @ObservationIgnored private var receiveSealer: FrameSealer?
+    @ObservationIgnored private var connectTask: Task<Void, Never>?
+    @ObservationIgnored private var reconnectTask: Task<Void, Never>?
+    @ObservationIgnored private var deadlineTask: Task<Void, Never>?
+    @ObservationIgnored private var resumeProbeTask: Task<Void, Never>?
+    @ObservationIgnored private var resumeProbeID: Date?
+    @ObservationIgnored private var lastProbeSecond: TimeInterval = 0
+    @ObservationIgnored private var wantsConnection = false
+    @ObservationIgnored private var isBackgrounded = false
     @ObservationIgnored private var receiveTask: Task<Void, Never>?
     @ObservationIgnored private var sendTask: Task<Void, Never>?
     @ObservationIgnored private var outbox: AsyncStream<Data>.Continuation?
@@ -134,23 +142,83 @@ public final class HostConnection {
     // MARK: Lifecycle
 
     public func connect() {
-        guard status != .connecting, status != .connected else { return }
+        wantsConnection = true
+        guard !isBackgrounded, status != .connecting, status != .connected else { return }
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        generation += 1
+        snapshotReceived = false
         status = .connecting
         if usePolling {
             startPolling()
         } else {
-            generation += 1
             let generation = generation
-            Task { await openSocket(generation) }
+            startConnectionDeadline(generation)
+            connectTask = Task { [weak self] in await self?.openSocket(generation) }
         }
     }
 
     public func disconnect() {
+        wantsConnection = false
         generation += 1
+        reconnectTask?.cancel()
+        reconnectTask = nil
         pollTask?.cancel()
         pollTask = nil
         tearDown()
         status = .disconnected
+    }
+
+    /// Keep a usable socket and the displayed panes. iOS may suspend networking, but
+    /// leaving the app alone is not a reason to close an authenticated connection.
+    public func pauseForBackground() {
+        isBackgrounded = true
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        deadlineTask?.cancel()
+        resumeProbeTask?.cancel()
+        resumeProbeTask = nil
+        resumeProbeID = nil
+        if usePolling { pollTask?.cancel(); pollTask = nil }
+    }
+
+    /// Transient inactive/active changes do nothing. After actual backgrounding, probe
+    /// an existing socket before replacing it; never cancel an in-flight handshake.
+    public func resumeAfterBackground() {
+        guard isBackgrounded else { return }
+        isBackgrounded = false
+        guard wantsConnection else { return }
+        switch status {
+        case .connected:
+            if usePolling { startPolling(); return }
+            let generation = generation
+            // Dates are encoded to whole ISO-8601 seconds. Keep each probe distinct even
+            // when multiple background/foreground transitions happen within one second.
+            lastProbeSecond = max(Date.now.timeIntervalSince1970.rounded(.down), lastProbeSecond + 1)
+            let probe = Date(timeIntervalSince1970: lastProbeSecond)
+            resumeProbeID = probe
+            send(.ping(probe))
+            let timeout = activeFileUpload == nil ? 2 : 8
+            resumeProbeTask = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
+                guard let self, generation == self.generation, !self.isBackgrounded else { return }
+                self.fail("The connection stopped responding. Reconnecting…", rotate: false,
+                          generation: generation, retryDelay: 0)
+            }
+        case .connecting:
+            if usePolling { startPolling() } else { startConnectionDeadline(generation) }
+        case .failed, .disconnected:
+            connect()
+        }
+    }
+
+    private func startConnectionDeadline(_ generation: Int) {
+        deadlineTask?.cancel()
+        deadlineTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            guard let self, !self.isBackgrounded, self.status == .connecting else { return }
+            self.fail("The host did not finish connecting. Trying another address…", generation: generation)
+        }
     }
 
     /// Waits until the first snapshot arrived, or every address failed; for command-line clients.
@@ -272,7 +340,9 @@ public final class HostConnection {
             receiveSealer = FrameSealer(key: KeySchedule.sessionKey(secret: pairing.secret, clientNonce: clientNonce, hostNonce: hostHello.nonce, .hostToClient))
             expectedIdentityChallenge = DeviceIdentity.webSocketChallenge(secret: pairing.secret, clientNonce: clientNonce, hostNonce: hostHello.nonce)
             hostName = hostHello.hostName
-            startSender(transport)
+            deadlineTask?.cancel()
+            deadlineTask = nil
+            startSender(transport, generation)
             startReceiver(transport, generation)
             status = .connected
             lastError = nil
@@ -283,14 +353,14 @@ public final class HostConnection {
                 send(.subscribe(paneID: id))
             }
         } catch ChannelError.authenticationFailed {
-            fail("The host rejected this pairing. Pair again.", rotate: false)
+            fail("The host rejected this pairing. Pair again.", rotate: false, generation: generation, retry: false)
         } catch {
-            fail("\(address): \(error.localizedDescription)")
+            fail("\(address): \(error.localizedDescription)", generation: generation)
         }
     }
 
     /// One task sends every frame, in order: the host refuses frames whose counter goes backwards.
-    private func startSender(_ transport: FrameTransport) {
+    private func startSender(_ transport: FrameTransport, _ generation: Int) {
         let (stream, continuation) = AsyncStream<Data>.makeStream()
         outbox = continuation
         sendTask = Task { [weak self] in
@@ -298,7 +368,7 @@ public final class HostConnection {
                 do {
                     try await transport.send(frame)
                 } catch {
-                    self?.fail(error.localizedDescription)
+                    self?.fail(error.localizedDescription, generation: generation)
                     return
                 }
             }
@@ -315,7 +385,7 @@ public final class HostConnection {
                 }
             } catch {
                 guard let self, generation == self.generation else { return }
-                self.fail(error.localizedDescription)
+                self.fail(error.localizedDescription, generation: generation)
             }
         }
     }
@@ -350,6 +420,7 @@ public final class HostConnection {
     }
 
     private func rpc(_ message: ClientMessage) async {
+        let generation = generation
         let address = currentAddress
         let literal = address.contains(":") && !address.hasPrefix("[") ? "[\(address)]" : address
         guard let url = URL(string: "http://\(literal):\(pairing.httpPort)/rpc") else { return fail("bad address") }
@@ -360,6 +431,7 @@ public final class HostConnection {
             http.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
             http.httpBody = try RPCSealing.seal(request, secret: pairing.secret, .clientToHost)
             let (data, response) = try await session.data(for: http)
+            guard generation == self.generation, !Task.isCancelled else { return }
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 return fail("host answered \((response as? HTTPURLResponse)?.statusCode ?? 0)", rotate: false)
             }
@@ -369,7 +441,8 @@ public final class HostConnection {
             activeAddress = address
             reply.messages.forEach(apply)
         } catch {
-            fail("\(address): \(error.localizedDescription)")
+            guard !Task.isCancelled else { return }
+            fail("\(address): \(error.localizedDescription)", generation: generation)
         }
     }
 
@@ -427,12 +500,23 @@ public final class HostConnection {
             overview = new
         case .error(let code, let text):
             lastError = "\(code): \(text)"
-        case .pong:
-            break
+        case .pong(let probe):
+            if probe == resumeProbeID {
+                resumeProbeTask?.cancel()
+                resumeProbeTask = nil
+                resumeProbeID = nil
+            }
         }
     }
 
     private func tearDown() {
+        connectTask?.cancel()
+        connectTask = nil
+        deadlineTask?.cancel()
+        deadlineTask = nil
+        resumeProbeTask?.cancel()
+        resumeProbeTask = nil
+        resumeProbeID = nil
         supportsPaneNames = false
         fileTransferMaximumBytes = nil
         let waiters = fileWaiters; fileWaiters = [:]
@@ -516,20 +600,35 @@ public final class HostConnection {
         }
     }
 
-    /// Drops the link; `rotate` moves on to the next address before retrying.
-    private func fail(_ reason: String, rotate: Bool = true) {
+    /// Invalidate the entire old attempt before closing it. Cancellation callbacks from
+    /// its sender/receiver/handshake can never tear down the replacement connection.
+    private func fail(_ reason: String, rotate: Bool = true, generation expected: Int? = nil,
+                      retry: Bool = true, retryDelay: Double? = nil) {
+        guard expected == nil || expected == generation else { return }
+        generation += 1
+        reconnectTask?.cancel()
+        reconnectTask = nil
         tearDown()
-        if rotate { addressIndex += 1 }
+        // A suspension is not evidence that another route is better than the one in use.
+        if rotate && !isBackgrounded { addressIndex += 1 }
         status = .failed(reason)
-        if !usePolling { scheduleReconnect() }
+        if !retry {
+            wantsConnection = false
+            pollTask?.cancel()
+            pollTask = nil
+        } else if !usePolling, wantsConnection, !isBackgrounded {
+            scheduleReconnect(delay: retryDelay)
+        }
     }
 
-    private func scheduleReconnect() {
-        let delay: Double = addressIndex % max(pairing.addresses.count, 1) == 0 ? 3 : 0.3
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            guard let self, case .failed = self.status else { return }
-            self.status = .disconnected
+    private func scheduleReconnect(delay: Double? = nil) {
+        reconnectTask?.cancel()
+        let generation = generation
+        let delay = delay ?? (addressIndex % max(pairing.addresses.count, 1) == 0 ? 3 : 0.3)
+        reconnectTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            guard let self, generation == self.generation, self.wantsConnection,
+                  !self.isBackgrounded, case .failed = self.status else { return }
             self.connect()
         }
     }
