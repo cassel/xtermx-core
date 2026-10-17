@@ -77,3 +77,9 @@ The initial validation reused local dependency/build caches; the hooks integrati
 The updated public source passed 190 Swift tests in 53 suites on macOS. The download is a universal Release build for Apple Silicon and Intel, requiring macOS 15+. It includes current host transfer settings and terminal replay fixes. The release contains build provenance, third-party notices and SHA-256 checksums.
 
 It is ad-hoc signed and not notarized; macOS may block first launch. Intel runtime and Linux runtime have not been validated for this download. The proprietary iOS and Watch applications are excluded.
+
+## Mac update checks
+
+The Mac menu **XTermX → Check for updates…** checks published releases in `cassel/xtermx-core`. **Settings → About → Updates** also shows the result and controls automatic daily checks and development releases (both enabled by default while XTermX distributes development builds). GitHub receives ordinary network connection information; no terminal content, credentials, machine identifier or installed build is sent in the request.
+
+The checker compares version/build numbers from each release's `BUILD_INFO.json`, requires a Mac DMG and a compatible minimum macOS version, and never offers an older build. Network errors are shown separately from a successful check with no update. Automatic checks notify once per available version/build. The release page opens only when chosen; downloads, installation and app restarts remain manual.

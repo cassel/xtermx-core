@@ -121,7 +121,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .shortcuts: ["Your key combinations", "Change", "Restore all defaults", "Navigation and standard keys"]
         case .privacy: ["Keep local activity logs", "Remove activity after", "Review activity", "Clear activity", "Prepare diagnostic preview", "Save reviewed diagnostic"]
         case .feedback: ["Tell us what happened", "Short title", "Prepare diagnostic preview", "Save reviewed diagnostic", "Open issue draft in browser"]
-        case .about: ["Version", "Build", "Copy version", "Project and releases", "Release notes and updates", "Project on GitHub"]
+        case .about: ["Version", "Build", "Copy version", "Updates", "Check for updates…", "Project and releases", "Release notes and updates", "Project on GitHub"]
         default: []
         }
     }

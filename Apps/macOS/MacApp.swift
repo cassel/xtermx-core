@@ -30,6 +30,10 @@ struct XTermXMacApp: App {
                 .environment(\.appTheme, AppTheme.preset(themeID))
                 .frame(minWidth: 720, minHeight: 420)
                 .preferredColorScheme(.dark)
+                .task { await MacUpdateController.shared.checkAutomatically() }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    Task { await MacUpdateController.shared.checkAutomatically() }
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 800)
@@ -830,6 +834,11 @@ struct AppCommands: Commands {
     @Environment(\.openSettings) private var openSettings
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button((InterfaceLanguage(rawValue: language) ?? .system).text("Check for updates…")) {
+                Task { await MacUpdateController.shared.check(manual: true) }
+            }.disabled(MacUpdateController.shared.checking)
+        }
         CommandGroup(replacing: .newItem) {
             Button((InterfaceLanguage(rawValue: language) ?? .system).text("New Workspace Tab")) { model.composing = true }.appShortcut(.newWorkspace, preferences: bindings)
             Button((InterfaceLanguage(rawValue: language) ?? .system).text("Saved Layouts…")) { openWindow(id: "layouts") }

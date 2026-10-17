@@ -7,6 +7,7 @@ struct AboutSettings: View {
     @Environment(\.appTheme) private var theme
 
     var body: some View {
+        @Bindable var updates = MacUpdateController.shared
         SettingsPage(section: .about) {
             SettingsCard("Version", "The copy of XTermX on this Mac; include it when you report a problem.") {
                 HStack(spacing: 12) {
@@ -26,6 +27,18 @@ struct AboutSettings: View {
                         NSPasteboard.general.setString("XTermX \(Self.short) (\(Self.build))", forType: .string)
                     }
                 }
+            }
+            SettingsCard("Updates", "Check public Mac releases on GitHub. No terminal content is sent.") {
+                Toggle("Check automatically once a day", isOn: $updates.automatic)
+                Toggle("Include development builds", isOn: $updates.development)
+                Text(LocalizedStringKey(updates.status)).font(.caption)
+                if let available = updates.available {
+                    Text("XTermX \(available.version) (\(available.build))").font(.caption.monospaced())
+                    Link("View update", destination: available.page)
+                }
+                Button("Check for updates…") { Task { await updates.check(manual: true) } }
+                    .disabled(updates.checking)
+                Text("Review the release and download it when convenient. Your terminals stay open.").font(.caption)
             }
             SettingsCard("Created by", "C. Cassel") {
                 Link("cassel.us", destination: URL(string: "https://cassel.us")!)
