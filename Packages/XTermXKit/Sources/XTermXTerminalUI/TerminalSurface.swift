@@ -2,6 +2,7 @@
 import SwiftTerm
 import SwiftUI
 #if os(iOS)
+import CoreText
 import UniformTypeIdentifiers
 #endif
 import XTermXKit
@@ -88,6 +89,32 @@ public final class TerminalFeed {
     public func type(_ data: Data) { onInput?(data) }
 
     #if os(iOS)
+    public var scrollCapabilities: TerminalScrollCapabilities { (view as? AttachmentTerminalView)?.scrollState.read() ?? .init() }
+    public var onScrollCapabilitiesChanged: (() -> Void)?
+    fileprivate var mousePacketSink: ((Data) -> Void)?
+    /// Encode through SwiftTerm's active mouse protocol without sending to the connection.
+    public func wheelPacket(up: Bool, at point: CGPoint) -> Data? {
+        guard scrollCapabilities.mouseTracking, let view else { return nil }
+        let size = view.terminalDimensions
+        guard size.cols > 0, size.rows > 0, view.bounds.width > 0, view.bounds.height > 0, view.contentSize.width > 0 else { return nil }
+        let x = min(view.bounds.width - 1, max(0, point.x - view.bounds.minX))
+        let y = min(view.bounds.height - 1, max(0, point.y - view.bounds.minY))
+        // Match the emulator's font grid, excluding unused space at the right/bottom edge.
+        let font = view.font as CTFont
+        let cellHeight = max(1, ceil((CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font)) * view.lineSpacing))
+        let cellWidth = max(1, view.contentSize.width / CGFloat(size.cols))
+        let col = min(size.cols - 1, Int(x / cellWidth))
+        let row = min(size.rows - 1, Int(y / cellHeight))
+        var result = Data()
+        mousePacketSink = { result.append($0) }
+        defer { mousePacketSink = nil }
+        let scale = max(1, view.window?.screen.scale ?? view.traitCollection.displayScale)
+        let pixelX = min(Int(CGFloat(size.cols) * cellWidth * scale) - 1, Int(x * scale))
+        let pixelY = min(Int(CGFloat(size.rows) * cellHeight * scale) - 1, Int(y * scale))
+        view.sendMouseEvent(button: up ? 4 : 5, release: false, col: col, row: row,
+                            pixelX: max(0, pixelX), pixelY: max(0, pixelY))
+        return result.isEmpty ? nil : result
+    }
     public var onPasteFiles: (([NSItemProvider]) -> Void)?
     /// Optional mobile interaction owner. No desktop behavior changes.
     public var onTouchView: ((UIScrollView) -> Void)? { didSet { if let view { onTouchView?(view) } } }
@@ -204,7 +231,12 @@ public struct TerminalSurface {
         }
         public func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
         public func send(source: TerminalView, data: ArraySlice<UInt8>) {
-            MainActor.assumeIsolated { feed.onInput?(Data(data)) }
+            MainActor.assumeIsolated {
+                #if os(iOS)
+                if let sink = feed.mousePacketSink { sink(Data(data)); return }
+                #endif
+                feed.onInput?(Data(data))
+            }
         }
         public func scrolled(source: TerminalView, position: Double) {}
         public func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
@@ -383,7 +415,39 @@ extension TerminalSurface: NSViewRepresentable {
     }
 }
 #else
+public struct TerminalScrollCapabilities: Equatable, Sendable {
+    public var mouseTracking: Bool
+    public var alternateScreen: Bool
+    public init(mouseTracking: Bool = false, alternateScreen: Bool = false) {
+        self.mouseTracking = mouseTracking; self.alternateScreen = alternateScreen
+    }
+}
+
+/// Terminal callbacks can run under its parser lock. Copy only capability flags here.
+fileprivate final class ScrollStateBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state = TerminalScrollCapabilities()
+    func update(_ state: TerminalScrollCapabilities) {
+        lock.lock(); defer { lock.unlock() }; self.state = state
+    }
+    func read() -> TerminalScrollCapabilities {
+        lock.lock(); defer { lock.unlock() }; return state
+    }
+}
+
 fileprivate final class AttachmentTerminalView: TerminalView {
+    nonisolated let scrollState = ScrollStateBox()
+    var scrollCapabilitiesChanged: (() -> Void)?
+    nonisolated override func mouseModeChanged(source: Terminal) {
+        scrollState.update(.init(mouseTracking: source.mouseMode != .off, alternateScreen: source.isCurrentBufferAlternate))
+        super.mouseModeChanged(source: source)
+        DispatchQueue.main.async { [weak self] in self?.scrollCapabilitiesChanged?() }
+    }
+    nonisolated override func bufferActivated(source: Terminal) {
+        scrollState.update(.init(mouseTracking: source.mouseMode != .off, alternateScreen: source.isCurrentBufferAlternate))
+        super.bufferActivated(source: source)
+        DispatchQueue.main.async { [weak self] in self?.scrollCapabilitiesChanged?() }
+    }
     var attachmentPaste: (([NSItemProvider]) -> Bool)?
     var reviewPaste: ((String) -> Void)?
     private weak var selectionController: UIViewController?
@@ -443,6 +507,7 @@ extension TerminalSurface: UIViewRepresentable {
         }
         if !retainMobileState { feed.retainedMobileView = nil }
         let view = AttachmentTerminalView(frame: .zero)
+        view.scrollCapabilitiesChanged = { [weak feed] in feed?.onScrollCapabilitiesChanged?() }
         view.accessibilityIdentifier = "terminal-surface"
         // Explicit OSC 8 links stay visible and respond to touch; plain URLs are detected
         // in the frozen text-selection screen without stealing terminal taps.
