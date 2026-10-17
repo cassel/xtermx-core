@@ -451,7 +451,7 @@ public final class HostConnection {
     private func apply(_ message: HostMessage) {
         switch message {
         case .fileTransferSupport(let maximum, let chunk):
-            if maximum > 0, chunk >= RemoteFileRules.chunkBytes { fileTransferMaximumBytes = min(maximum, RemoteFileRules.maximumTransferBytes) }
+            if maximum > 0, chunk >= RemoteFileRules.chunkBytes { fileTransferMaximumBytes = maximum }
         case .fileTransfer(let reply):
             if case .complete(_, let file) = reply { receivedFile = file }
             fileWaiters.removeValue(forKey: reply.id)?.continuation.resume(returning: reply)
@@ -548,7 +548,7 @@ public final class HostConnection {
         guard let limit = fileTransferMaximumBytes else { throw FileUploadFailure("Update XTermX on this Mac to send large files from the terminal. Older hosts only support 4 MB through Rooms & files.") }
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true, let bytes = values.fileSize, bytes <= limit,
-              RemoteFileRules.validName(url.lastPathComponent) else { throw FileUploadFailure("Choose a regular file up to 64 MB with a plain filename.") }
+              RemoteFileRules.validName(url.lastPathComponent) else { throw FileUploadFailure("Choose a regular file up to \(ByteCountFormatter.string(fromByteCount: Int64(limit), countStyle: .binary)) with a plain filename.") }
         let id = UUID(); activeFileUpload = id; fileUploadProgress = 0
         defer { activeFileUpload = nil; fileUploadProgress = nil }
         do {

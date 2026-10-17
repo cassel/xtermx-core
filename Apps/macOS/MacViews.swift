@@ -1112,7 +1112,7 @@ struct DevicesView: View {
                                                                   set: { model.server.allowRemoteSpawn = $0 }))
                 Toggle("Receive files from devices", isOn: Binding(get: { model.server.permissions.sendFiles }, set: { model.server.permissions.sendFiles = $0 }))
                     .toggleStyle(.switch)
-                Text("Terminal attachments: up to 64 MB per file. Older Rooms & files uploads: up to 4 MB.")
+                Text("Configure attachment limits in Settings → Remote access. Older Rooms & files uploads: up to 4 MB.")
                     .font(.caption).foregroundStyle(theme.chrome.mutedForeground.color)
             }
             SectionLabel("Devices · \(model.deviceRoster.count)")

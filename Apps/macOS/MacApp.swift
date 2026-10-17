@@ -212,6 +212,16 @@ final class AppModel {
     let appMemory = AppMemoryMeter()
     let dictation = PaneDictationController()
     let receivedCleanup = ReceivedCleanupController()
+    var receivedFileLimits: ReceivedFileLimits = {
+        if let data = UserDefaults.standard.data(forKey: "xtermx.received.limits"),
+           let value = try? JSONDecoder().decode(ReceivedFileLimits.self, from: data), value.isValid { return value }
+        return ReceivedFileLimits()
+    }() {
+        didSet {
+            server.updateReceivedFileLimits(receivedFileLimits)
+            if let data = try? JSONEncoder().encode(receivedFileLimits) { UserDefaults.standard.set(data, forKey: "xtermx.received.limits") }
+        }
+    }
     /// Set while this window spawns panes itself, so `place` leaves them to the caller.
     @ObservationIgnored var spawningLocally = false
 
@@ -255,6 +265,7 @@ final class AppModel {
         if UserDefaults.standard.object(forKey: "xtermx.remote.enabled") as? Bool ?? true { server.start() }
         remoteAwake.start(server: server)
         appMemory.start(manager: manager)
+        server.updateReceivedFileLimits(receivedFileLimits)
         receivedCleanup.start(store: server.receivedFiles)
         dictation.target = { [weak self] in
             guard let self, let id = focusedPane, let pane = pane(id), pane.state != .exited else { return nil }

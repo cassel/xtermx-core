@@ -50,12 +50,24 @@ public struct ReceivedFile: Codable, Sendable, Equatable, Identifiable {
 
 public enum RemoteFileRules {
     public static let maximumBytes = 4 * 1024 * 1024
-    public static let maximumTransferBytes = 64 * 1024 * 1024
+    public static let maximumTransferBytes = 500 * 1024 * 1024
     public static let chunkBytes = 256 * 1024
-    public static let maximumStoredBytes = 100 * 1024 * 1024
     public static func validName(_ name: String) -> Bool {
         !name.isEmpty && name.utf8.count <= 180 && name != "." && name != ".."
             && !name.contains("/") && !name.contains("\\")
             && !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+    }
+}
+
+/// Host policy advertised to paired devices. Storage quotas are optional, not a hidden global cap.
+public struct ReceivedFileLimits: Codable, Sendable, Equatable {
+    public var maximumFileBytes: Int
+    public var maximumStoredBytes: Int?
+    public init(maximumFileBytes: Int = RemoteFileRules.maximumTransferBytes, maximumStoredBytes: Int? = nil) {
+        self.maximumFileBytes = maximumFileBytes
+        self.maximumStoredBytes = maximumStoredBytes
+    }
+    public var isValid: Bool {
+        maximumFileBytes > 0 && (maximumStoredBytes.map { $0 > 0 && $0 >= maximumFileBytes } ?? true)
     }
 }

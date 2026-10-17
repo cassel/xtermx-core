@@ -120,7 +120,7 @@ On the Mac, open the globe menu or press **⌘⇧G**, enable remote access, then
 - Paired device history stays listed after disconnection; an offline entry does not mean the device has an active connection.
 - Panes can be shared as **View & control**, **View only** or **Private**.
 - Remote terminal creation, file receipt and Control Room permissions have host controls.
-- Receiving files is opt-in. The terminal attachment protocol supports up to 64 MB per file; older hosts have a smaller legacy path.
+- Receiving files is opt-in. The host sets the attachment size limit in Settings → Remote access (500 MB per file by default), with an optional total storage quota. Changes reach paired devices immediately. Older Rooms & files uploads remain limited to 4 MB.
 - **Forget all devices** rotates the pairing secret and requires devices to pair again.
 
 Terminal frames use authenticated ChaCha20-Poly1305 encryption, fresh connection nonces and replay counters. Network ports are **47820** for WebSocket and **47821** for the Watch-compatible HTTP transport; Bonjour advertises `_xtermx._tcp`. Reachability depends on your LAN/VPN/firewall configuration. Do not assume `.local` names work outside your LAN.

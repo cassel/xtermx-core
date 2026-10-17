@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import SwiftUI
 import XTermXHost
+import XTermXKit
 
 @MainActor @Observable final class ReceivedCleanupController {
     var days = UserDefaults.standard.integer(forKey: "xtermx.received.keep-days") {
@@ -51,6 +52,43 @@ struct ReceivedCleanupSettings: View {
                 .disabled(model.receivedCleanup.days == 0 || model.receivedCleanup.running)
             if let removed = model.receivedCleanup.removed { Text("Last cleanup removed \(removed) files.").font(.caption) }
             if let error = model.receivedCleanup.error { Text(error).font(.caption).foregroundStyle(.red) }
+        }
+    }
+}
+
+struct ReceivedFileLimitSettings: View {
+    @Environment(AppModel.self) private var model
+    private let mb = 1024 * 1024
+    var body: some View {
+        SettingsCard("File transfer limits", "This host chooses the limits. Paired devices receive changes immediately.") {
+            LabeledContent("Maximum file size (MB)") {
+                TextField("MB", value: Binding(get: { model.receivedFileLimits.maximumFileBytes / mb }, set: { value in
+                    guard value > 0, value <= Int.max / mb else { return }
+                    var limits = model.receivedFileLimits
+                    limits.maximumFileBytes = value * mb
+                    if let quota = limits.maximumStoredBytes, quota < limits.maximumFileBytes { limits.maximumStoredBytes = limits.maximumFileBytes }
+                    model.receivedFileLimits = limits
+                }), format: .number).frame(width: 110).textFieldStyle(.roundedBorder)
+            }
+            Toggle("Limit total received-file storage", isOn: Binding(get: { model.receivedFileLimits.maximumStoredBytes != nil }, set: { enabled in
+                var limits = model.receivedFileLimits
+                limits.maximumStoredBytes = enabled ? limits.maximumFileBytes : nil
+                model.receivedFileLimits = limits
+            })).toggleStyle(.switch)
+            if let quota = model.receivedFileLimits.maximumStoredBytes {
+                LabeledContent("Total storage limit (MB)") {
+                    TextField("MB", value: Binding(get: { quota / mb }, set: { value in
+                        guard value > 0, value <= Int.max / mb, value * mb >= model.receivedFileLimits.maximumFileBytes else { return }
+                        var limits = model.receivedFileLimits
+                        limits.maximumStoredBytes = value * mb
+                        model.receivedFileLimits = limits
+                    }), format: .number).frame(width: 110).textFieldStyle(.roundedBorder)
+                }
+            } else {
+                Text("No storage quota. Available disk space still applies.").font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Existing files are kept when limits change. Older Rooms & files uploads remain limited to 4 MB.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

@@ -22386,6 +22386,258 @@
           }
         }
       }
+    },
+    "File transfer limits": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "File transfer limits"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Limites de transferência de arquivos"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Límites de transferencia de archivos"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件传输限制"
+          }
+        }
+      }
+    },
+    "This host chooses the limits. Paired devices receive changes immediately.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This host chooses the limits. Paired devices receive changes immediately."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este host define os limites. Dispositivos pareados recebem as alterações imediatamente."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este host establece los límites. Los dispositivos enlazados reciben los cambios inmediatamente."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此主机设置限制。已配对设备会立即收到更改。"
+          }
+        }
+      }
+    },
+    "Maximum file size (MB)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maximum file size (MB)"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tamanho máximo por arquivo (MB)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tamaño máximo por archivo (MB)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "单个文件大小上限 (MB)"
+          }
+        }
+      }
+    },
+    "Limit total received-file storage": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Limit total received-file storage"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Limitar o armazenamento total de arquivos recebidos"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Limitar el almacenamiento total de archivos recibidos"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "限制接收文件的总存储空间"
+          }
+        }
+      }
+    },
+    "Total storage limit (MB)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Total storage limit (MB)"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Limite de armazenamento total (MB)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Límite de almacenamiento total (MB)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "总存储空间上限 (MB)"
+          }
+        }
+      }
+    },
+    "No storage quota. Available disk space still applies.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No storage quota. Available disk space still applies."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sem cota de armazenamento. O espaço disponível em disco ainda se aplica."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin cuota de almacenamiento. Se aplica el espacio disponible en disco."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无存储配额。仍受可用磁盘空间限制。"
+          }
+        }
+      }
+    },
+    "Existing files are kept when limits change. Older Rooms & files uploads remain limited to 4 MB.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Existing files are kept when limits change. Older Rooms & files uploads remain limited to 4 MB."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Os arquivos existentes são mantidos ao alterar os limites. Envios antigos por Salas e arquivos continuam limitados a 4 MB."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los archivos existentes se conservan al cambiar los límites. Las cargas antiguas de Salas y archivos siguen limitadas a 4 MB."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更改限制时会保留已有文件。旧版“房间与文件”上传仍限制为 4 MB。"
+          }
+        }
+      }
+    },
+    "Attachment limits are configured below. Older Rooms & files uploads: up to 4 MB.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attachment limits are configured below. Older Rooms & files uploads: up to 4 MB."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure os limites de anexos abaixo. Envios antigos por Salas e arquivos: até 4 MB."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure los límites de adjuntos abajo. Cargas antiguas de Salas y archivos: hasta 4 MB."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在下方设置附件限制。旧版“房间与文件”上传：最大 4 MB。"
+          }
+        }
+      }
+    },
+    "Configure attachment limits in Settings → Remote access. Older Rooms & files uploads: up to 4 MB.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure attachment limits in Settings → Remote access. Older Rooms & files uploads: up to 4 MB."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure os limites de anexos em Ajustes → Acesso remoto. Envios antigos por Salas e arquivos: até 4 MB."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure los límites de adjuntos en Ajustes → Acceso remoto. Cargas antiguas de Salas y archivos: hasta 4 MB."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在“设置 → 远程访问”中设置附件限制。旧版“房间与文件”上传：最大 4 MB。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

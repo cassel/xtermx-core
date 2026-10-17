@@ -99,6 +99,7 @@ struct RemoteAccessSettings: View {
                 }
             }
             RemoteSpawnSettings()
+            ReceivedFileLimitSettings()
             SettingsCard("What devices can do", "These choices apply to every paired device and take effect immediately.") {
                 Toggle("Let devices open new panes", isOn: Binding(get: { model.server.allowRemoteSpawn },
                                                                   set: { model.server.allowRemoteSpawn = $0 }))
@@ -110,7 +111,7 @@ struct RemoteAccessSettings: View {
                 Toggle("Receive files from devices", isOn: Binding(get: { model.server.permissions.sendFiles },
                                                                    set: { model.server.permissions.sendFiles = $0 }))
                     .toggleStyle(.switch)
-                Text("Terminal attachments: up to 64 MB per file. Older Rooms & files uploads: up to 4 MB.").font(.caption)
+                Text("Attachment limits are configured below. Older Rooms & files uploads: up to 4 MB.").font(.caption)
                 Button("Show received files") {
                     let url = model.server.receivedFiles.directory
                     do {

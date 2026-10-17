@@ -447,6 +447,14 @@ public final class RemoteServer {
         peer.connection.send(frame)
     }
 
+    public func updateReceivedFileLimits(_ limits: ReceivedFileLimits) {
+        guard limits.isValid else { return }
+        receivedFiles.limits = limits
+        for peer in peers.values where peer.sendSealer != nil {
+            send(.fileTransferSupport(maximumBytes: limits.maximumFileBytes, chunkBytes: RemoteFileRules.chunkBytes), to: peer)
+        }
+    }
+
     private func broadcast(_ event: HostEvent) {
         if case .paneUpdated(let info) = event {
             var policy = paneSharing
@@ -485,7 +493,7 @@ public final class RemoteServer {
     private func handle(_ message: ClientMessage, peer: Peer?, uploadOwner: String? = nil) -> [HostMessage] {
         switch message {
         case .snapshot:
-            var replies: [HostMessage] = [.snapshot(snapshotForDevices()), .permissions(permissions), .fileTransferSupport(maximumBytes: RemoteFileRules.maximumTransferBytes, chunkBytes: RemoteFileRules.chunkBytes)]
+            var replies: [HostMessage] = [.snapshot(snapshotForDevices()), .permissions(permissions), .fileTransferSupport(maximumBytes: receivedFiles.limits.maximumFileBytes, chunkBytes: RemoteFileRules.chunkBytes)]
             if let peer { replies.insert(.deviceChallenge(peer.identityChallenge), at: 0) }
             return replies
         case .identifyDevice(let proof):
@@ -514,7 +522,7 @@ public final class RemoteServer {
             if case .cancel = request { fileChunks.cancel(request.id, owner: owner); return [.fileTransfer(.progress(id: request.id, bytes: 0))] }
             guard permissions.sendFiles else { fileChunks.cancel(request.id, owner: owner); return [.fileTransfer(.failed(id: request.id, message: "On the Mac, turn on Receive files from devices in Remote access settings."))] }
             do { return [.fileTransfer(try fileChunks.handle(request, owner: owner, store: receivedFiles))] }
-            catch { fileChunks.cancel(request.id, owner: owner); return [.fileTransfer(.failed(id: request.id, message: "The Mac could not save this transfer. Check free space and try again."))] }
+            catch { fileChunks.cancel(request.id, owner: owner); return [.fileTransfer(.failed(id: request.id, message: ReceivedFileStore.transferErrorMessage(error)))] }
         case .upload(let name, let data):
             guard permissions.sendFiles else { return [.error(code: "FILES_OFF", message: "Receiving files is off on this Mac.")] }
             do { return [.receivedFile(try receivedFiles.receive(name: name, data: data))] }
