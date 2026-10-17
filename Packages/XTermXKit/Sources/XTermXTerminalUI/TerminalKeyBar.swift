@@ -90,6 +90,7 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         for text in ["~", "/", "|", "-", "_", "\\", "$", "*", "`", "'", "\""] {
             row.addArrangedSubview(key(text) { [weak self] in self?.terminal?.insertText(text) })
         }
+        row.addArrangedSubview(key(symbol: "text.cursor", label: NSLocalizedString("Select text and links", comment: "Terminal selection button")) { [weak self] in self?.feed.selectText() })
         row.addArrangedSubview(key(symbol: "doc.on.clipboard", label: "Paste") { [weak self] in self?.terminal?.paste(nil) })
     }
 

@@ -2,9 +2,9 @@
 import SwiftTerm
 import UIKit
 
-/// Long-press the text, then drag: arrow keys toward the finger, as in Termius. The farther the
+/// Hold two fingers on the text, then drag: arrow keys toward the fingers. The farther the
 /// finger goes from where it pressed, the faster they repeat; back at the middle, they stop.
-/// Replaces SwiftTerm's long-press menu (double-tap still selects a word and shows Copy).
+/// One-finger long-press remains available for the native selection and Copy menu.
 @MainActor
 final class ArrowPadGesture: NSObject {
     enum Direction { case up, down, left, right }
@@ -23,11 +23,9 @@ final class ArrowPadGesture: NSObject {
         self.terminal = terminal
         self.feed = feed
         super.init()
-        for old in terminal.gestureRecognizers ?? [] where old is UILongPressGestureRecognizer {
-            old.isEnabled = false
-        }
         let press = UILongPressGestureRecognizer(target: self, action: #selector(pressed))
         press.minimumPressDuration = 0.3
+        press.numberOfTouchesRequired = 2
         terminal.addGestureRecognizer(press)
     }
 

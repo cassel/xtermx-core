@@ -7,6 +7,36 @@ import Testing
 
 @MainActor
 @Suite struct TerminalFeedTests {
+    @Test func visibleTextCopiesTheViewportWithoutChangingLiveSelectionOrSendingInput() {
+        let feed = TerminalFeed()
+        let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 500), font: nil)
+        feed.bind(view)
+        feed.receive(Data(("old scrollback marker\r\n" + String(repeating: "\r\n", count: 100) + "current screen").utf8))
+        view.selectAll(view)
+        let selection = view.getSelection()
+        let text = feed.visibleText()
+        #expect(text.contains("current screen"))
+        #expect(!text.contains("old scrollback marker"))
+        #expect(view.getSelection() == selection)
+        feed.receive(Data("\r\nnew output".utf8))
+        #expect(!text.contains("new output")) // snapshot is frozen, while the terminal continues
+        #expect(feed.visibleText().contains("new output"))
+    }
+
+    @Test func visibleTextRejoinsWrappedLinksAndUsesTheActiveAlternateScreen() {
+        let feed = TerminalFeed()
+        let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 180, height: 500), font: nil)
+        feed.bind(view)
+        feed.receive(Data("shell text\u{1b}[?1049h\u{1b}[H".utf8))
+        let link = "https://example.com/" + String(repeating: "segment/", count: 6)
+        feed.receive(Data(link.utf8))
+        #expect(view.terminalStateSnapshot().visibleRows.contains { $0.isWrapped })
+        let text = feed.visibleText()
+        #expect(text.contains(link))
+        #expect(!text.contains("shell text"))
+        #expect(TerminalFeed().visibleText().isEmpty)
+    }
+
     @Test func replacementViewReplaysAnIdleAlternateScreenAtTheSameSize() {
         let host = Terminal(delegate: ScreenSnapshotTests.Quiet(), options: TerminalOptions(cols: 80, rows: 24))
         host.feed(text: "\u{1b}[?1049h\u{1b}[Hxtmux chooser\u{1b}[24;1Hsession status")

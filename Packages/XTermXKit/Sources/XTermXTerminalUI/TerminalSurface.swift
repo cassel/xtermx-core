@@ -96,6 +96,25 @@ public final class TerminalFeed {
         view.copy(view)
     }
 
+    /// A frozen copy of the visible viewport; never selects or sends input to the live terminal.
+    public func visibleText() -> String {
+        guard let view else { return "" }
+        let snapshot = view.terminalStateSnapshot()
+        var text = ""
+        for (index, row) in snapshot.visibleRows.enumerated() {
+            // Soft-wrapped rows belong to the same logical line, including long URLs.
+            if index > 0, !row.isWrapped { text += "\n" }
+            text += row.text
+        }
+        return text
+    }
+
+    #if os(iOS)
+    public func selectText() {
+        (view as? AttachmentTerminalView)?.showTextSelection(visibleText())
+    }
+    #endif
+
     /// Last size the view reported, in cells.
     public fileprivate(set) var size: (cols: Int, rows: Int)?
 
@@ -150,7 +169,8 @@ public struct TerminalSurface {
             guard let url = SelectionCopyTerminalView.browserURL(link) else { return }
             NSWorkspace.shared.open(url)
             #else
-            guard let url = URL(string: link) else { return }
+            guard let url = URL(string: link),
+                  ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else { return }
             UIApplication.shared.open(url)
             #endif
         }
@@ -322,6 +342,21 @@ extension TerminalSurface: NSViewRepresentable {
 #else
 private final class AttachmentTerminalView: TerminalView {
     var attachmentPaste: (([NSItemProvider]) -> Bool)?
+    private weak var selectionController: UIViewController?
+
+    func showTextSelection(_ text: String) {
+        guard selectionController == nil, let root = window?.rootViewController else { return }
+        var presenter = root
+        while let presented = presenter.presentedViewController { presenter = presented }
+        let reader = TerminalTextSelectionController(text: text, font: font,
+            foreground: nativeForegroundColor, background: nativeBackgroundColor)
+        let navigation = UINavigationController(rootViewController: reader)
+        navigation.modalPresentationStyle = .pageSheet
+        selectionController = navigation
+        _ = resignFirstResponder()
+        presenter.present(navigation, animated: true)
+    }
+
     override func paste(_ sender: Any?) {
         let providers = UIPasteboard.general.itemProviders
         let hasAttachment = providers.contains { provider in
@@ -338,6 +373,10 @@ private final class AttachmentTerminalView: TerminalView {
 extension TerminalSurface: UIViewRepresentable {
     public func makeUIView(context: Context) -> TerminalView {
         let view = AttachmentTerminalView(frame: .zero)
+        view.accessibilityIdentifier = "terminal-surface"
+        // Explicit OSC 8 links stay visible and respond to touch; plain URLs are detected
+        // in the frozen text-selection screen without stealing terminal taps.
+        view.linkHighlightMode = .always
         view.attachmentPaste = { [weak feed] providers in
             guard let handler = feed?.onPasteFiles else { return false }
             handler(providers); return true
