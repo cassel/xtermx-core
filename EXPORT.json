@@ -15,7 +15,7 @@
     "Apps/macOS/Info.plist": "b9af62232576a5bb7e120e5deead9b706a9d9db90008392fa95d2da9dcc5a0ee",
     "Apps/macOS/InterfaceLanguagePicker.swift": "a9962ea12d1bf640ae2db0faba01af259765861aa5cdb9f9ec26b55297140b5e",
     "Apps/macOS/Localizable.xcstrings": "33694a5cd20623872a01415f2b4afb57fcf5d35c43b71f76da10a0584f639af5",
-    "Apps/macOS/MacApp.swift": "a6ac5743364e5b8ebb5f15da85dedb1d7e757e4d95568950bf05b63be9b1c442",
+    "Apps/macOS/MacApp.swift": "2738286b4c2b757442332e5cda0aee8f62c74b5889fd33994719d6a9f7379fc2",
     "Apps/macOS/MacUpdates.swift": "ba3646f218b37423b98e2e576fe074e5ef26efb309fa61a5bcc62a649b94f439",
     "Apps/macOS/MacViews.swift": "9d6a212b027f73016c3fbd13cca458716712e0033f5dfc0d47d375b177e80b2c",
     "Apps/macOS/Machines.swift": "9c760eb8ebe04af70ee7157540441bbc5449f0cfc2ee00836b1b91ae8476a98a",

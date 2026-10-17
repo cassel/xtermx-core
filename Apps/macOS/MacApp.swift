@@ -31,6 +31,9 @@ struct XTermXMacApp: App {
                 .frame(minWidth: 720, minHeight: 420)
                 .preferredColorScheme(.dark)
                 .task { await MacUpdateController.shared.checkAutomatically() }
+                .onReceive(Timer.publish(every: 3600, on: .main, in: .common).autoconnect()) { _ in
+                    Task { await MacUpdateController.shared.checkAutomatically() }
+                }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                     Task { await MacUpdateController.shared.checkAutomatically() }
                 }
