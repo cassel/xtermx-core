@@ -97,7 +97,18 @@ public final class HostConnection {
     @ObservationIgnored private var isBackgrounded = false
     @ObservationIgnored private var receiveTask: Task<Void, Never>?
     @ObservationIgnored private var sendTask: Task<Void, Never>?
-    @ObservationIgnored private var outbox: AsyncStream<Data>.Continuation?
+    private struct Outbound {
+        var frame: Data
+        var navigationID: UUID? = nil
+    }
+    private struct NavigationWaiter {
+        var id: UUID
+        var expires: Date
+        var valid: @MainActor () -> Bool
+        var continuation: CheckedContinuation<Bool, Never>
+    }
+    @ObservationIgnored private var navigationWaiter: NavigationWaiter?
+    @ObservationIgnored private var outbox: AsyncStream<Outbound>.Continuation?
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var subscribed: Set<String> = []
     /// The size each pane was last fitted to here, sent again before subscribing after a reconnect.
@@ -300,10 +311,43 @@ public final class HostConnection {
         do {
             let frame = try sealer.seal(WireCoding.encoder().encode(message))
             sendSealer = sealer
-            outbox?.yield(frame)
+            outbox?.yield(Outbound(frame: frame))
         } catch {
             fail("encode: \(error)")
         }
+    }
+
+    /// Ephemeral navigation: one outstanding event, never replayed after cancellation/reconnect.
+    public func navigationInput(paneID: String, bytes: Data, valid: @escaping @MainActor () -> Bool) async -> Bool {
+        await ephemeralInput(paneID: paneID, bytes: bytes, limit: 32, lifetime: 0.15, valid: valid)
+    }
+    public func reviewedInput(paneID: String, bytes: Data) async -> Bool {
+        await ephemeralInput(paneID: paneID, bytes: bytes, limit: 65_536, lifetime: 5) { [weak self] in
+            self?.status == .connected && self?.canControl(paneID) == true
+        }
+    }
+    private func ephemeralInput(paneID: String, bytes: Data, limit: Int, lifetime: TimeInterval, valid: @escaping @MainActor () -> Bool) async -> Bool {
+        guard status == .connected, !usePolling, canControl(paneID), bytes.count <= limit,
+              navigationWaiter == nil, !Task.isCancelled, valid(), let outbox, var sealer = sendSealer else { return false }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(returning: false); return }
+                do {
+                    let frame = try sealer.seal(WireCoding.encoder().encode(ClientMessage.input(paneID: paneID, data: bytes)))
+                    sendSealer = sealer
+                    navigationWaiter = NavigationWaiter(id: id, expires: .now.addingTimeInterval(lifetime), valid: valid, continuation: continuation)
+                    outbox.yield(Outbound(frame: frame, navigationID: id))
+                } catch { continuation.resume(returning: false) }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.finishNavigation(id, sent: false) }
+        }
+    }
+    private func finishNavigation(_ id: UUID, sent: Bool) {
+        guard navigationWaiter?.id == id else { return }
+        let waiter = navigationWaiter; navigationWaiter = nil
+        waiter?.continuation.resume(returning: sent)
     }
 
     // MARK: WebSocket transport
@@ -361,14 +405,23 @@ public final class HostConnection {
 
     /// One task sends every frame, in order: the host refuses frames whose counter goes backwards.
     private func startSender(_ transport: FrameTransport, _ generation: Int) {
-        let (stream, continuation) = AsyncStream<Data>.makeStream()
+        let (stream, continuation) = AsyncStream<Outbound>.makeStream()
         outbox = continuation
         sendTask = Task { [weak self] in
-            for await frame in stream {
+            for await item in stream {
+                guard let self, generation == self.generation, !Task.isCancelled else { return }
+                if let id = item.navigationID {
+                    guard let waiter = self.navigationWaiter, waiter.id == id else { continue }
+                    guard Date.now < waiter.expires, waiter.valid(), self.status == .connected else {
+                        self.finishNavigation(id, sent: false); continue
+                    }
+                }
                 do {
-                    try await transport.send(frame)
+                    try await transport.send(item.frame)
+                    if let id = item.navigationID { self.finishNavigation(id, sent: true) }
                 } catch {
-                    self?.fail(error.localizedDescription, generation: generation)
+                    if let id = item.navigationID { self.finishNavigation(id, sent: false) }
+                    self.fail(error.localizedDescription, generation: generation)
                     return
                 }
             }
@@ -510,6 +563,7 @@ public final class HostConnection {
     }
 
     private func tearDown() {
+        if let id = navigationWaiter?.id { finishNavigation(id, sent: false) }
         connectTask?.cancel()
         connectTask = nil
         deadlineTask?.cancel()

@@ -154,6 +154,9 @@ public final class SSHSession {
     @ObservationIgnored public let feed = TerminalFeed()
     @ObservationIgnored var client: SSHClient?
     @ObservationIgnored private var writer: TTYStdinWriter?
+    @ObservationIgnored private var navigationBusy = false
+    @ObservationIgnored var sftpOperationBusy = false
+    @ObservationIgnored private var resizeTask: Task<Void, Never>?
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var generation = UUID()
 
@@ -182,6 +185,10 @@ public final class SSHSession {
     }
 
     public func disconnect() {
+        resizeTask?.cancel(); resizeTask = nil
+        #if os(iOS)
+        feed.stopTouchInput()
+        #endif
         generation = UUID()
         task?.cancel()
         task = nil
@@ -259,6 +266,30 @@ public final class SSHSession {
 
     public func send(_ data: Data) { write(data) }
 
+    /// Await the SSH channel's write/flush; gesture callers admit at most one outstanding event.
+    public func navigationInput(_ data: Data) async -> Bool {
+        guard status == .connected, !navigationBusy, !Task.isCancelled, let writer, data.count <= 32 else { return false }
+        navigationBusy = true
+        defer { navigationBusy = false }
+        let generation = generation
+        do {
+            try Task.checkCancellation()
+            try await writer.write(ByteBuffer(bytes: data))
+            return generation == self.generation && !Task.isCancelled
+        } catch { return false }
+    }
+
+
+    public func reviewedInput(_ data: Data) async -> Bool {
+        guard status == .connected, !Task.isCancelled, let writer, data.count <= 65_536 else { return false }
+        let generation = generation
+        do {
+            try Task.checkCancellation()
+            try await writer.write(ByteBuffer(bytes: data))
+            return generation == self.generation && !Task.isCancelled
+        } catch { return false }
+    }
+
     private func write(_ data: Data) {
         guard let writer else { return }
         Task { try? await writer.write(ByteBuffer(bytes: data)) }
@@ -266,7 +297,17 @@ public final class SSHSession {
 
     private func resize(cols: Int, rows: Int) {
         guard let writer else { return }
+        #if os(iOS)
+        resizeTask?.cancel()
+        let generation = generation
+        resizeTask = Task {
+            do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+            guard generation == self.generation, !Task.isCancelled else { return }
+            try? await writer.changeSize(cols: cols, rows: rows, pixelWidth: 0, pixelHeight: 0)
+        }
+        #else
         Task { try? await writer.changeSize(cols: cols, rows: rows, pixelWidth: 0, pixelHeight: 0) }
+        #endif
     }
 }
 #endif

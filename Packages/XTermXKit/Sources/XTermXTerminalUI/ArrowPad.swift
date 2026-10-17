@@ -15,6 +15,7 @@ final class ArrowPadGesture: NSObject {
     private var direction: Direction?
     private var distance: CGFloat = 0
     private var timer: Timer?
+    nonisolated(unsafe) private var observer: NSObjectProtocol?
 
     /// How far the finger must go before a key is sent.
     static let deadZone: CGFloat = 16
@@ -24,9 +25,20 @@ final class ArrowPadGesture: NSObject {
         self.feed = feed
         super.init()
         let press = UILongPressGestureRecognizer(target: self, action: #selector(pressed))
+        press.name = "xtermx-legacy-arrows"
         press.minimumPressDuration = 0.3
         press.numberOfTouchesRequired = 2
         terminal.addGestureRecognizer(press)
+        feed.onCancelTouch = { [weak self] in self?.cancel() }
+        observer = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.cancel() }
+        }
+    }
+
+    deinit { timer?.invalidate(); if let observer { NotificationCenter.default.removeObserver(observer) } }
+    private func cancel() {
+        timer?.invalidate(); timer = nil; direction = nil
+        pad?.removeFromSuperview(); pad = nil
     }
 
     @objc private func pressed(_ gesture: UILongPressGestureRecognizer) {
@@ -55,11 +67,7 @@ final class ArrowPadGesture: NSObject {
                 schedule()
             }
         default:
-            timer?.invalidate()
-            timer = nil
-            direction = nil
-            pad?.removeFromSuperview()
-            pad = nil
+            cancel()
         }
     }
 

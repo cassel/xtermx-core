@@ -24,6 +24,9 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: 44), inputViewStyle: .keyboard)
         allowsSelfSizing = true
         build()
+        observers.append(NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.repeatTimer?.invalidate(); self?.repeatTimer = nil }
+        })
         // SwiftTerm clears a modifier after one key; a locked one comes straight back.
         for name in [Notification.Name.terminalViewControlModifierReset, .terminalViewMetaModifierReset] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: terminal, queue: .main) { [weak self] _ in
@@ -35,7 +38,13 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     deinit {
+        repeatTimer?.invalidate()
         observers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { repeatTimer?.invalidate(); repeatTimer = nil }
     }
 
     override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: 44) }
@@ -60,7 +69,7 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
             row.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 6),
             row.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -6),
             row.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
-            row.heightAnchor.constraint(equalToConstant: 34),
+            row.heightAnchor.constraint(equalToConstant: 44),
         ])
 
         row.addArrangedSubview(key(symbol: "keyboard.chevron.compact.down", label: "Hide keyboard") { [weak self] in
@@ -98,7 +107,7 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         let button = UIButton(configuration: Self.config(title: title, on: false, locked: false))
         if let symbol { button.configuration?.image = UIImage(systemName: symbol) }
         button.accessibilityLabel = label ?? title
-        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
+        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         return button
     }
 

@@ -7,6 +7,16 @@ import Testing
 
 @MainActor
 @Suite struct TerminalFeedTests {
+    @Test func cursorModeTracksSplitSequencesAndBothKindsOfReset() {
+        let feed = TerminalFeed()
+        for byte in Array("\u{1b}[?1;2004h".utf8) { feed.receive(Data([byte])) }
+        #expect(feed.applicationCursor)
+        feed.receive(Data([27])); feed.receive(Data([99]))
+        #expect(!feed.applicationCursor)
+        feed.receive(Data("\u{1b}[?1h".utf8)); #expect(feed.applicationCursor)
+        feed.reset(); #expect(!feed.applicationCursor)
+    }
+
     @Test func visibleTextCopiesTheViewportWithoutChangingLiveSelectionOrSendingInput() {
         let feed = TerminalFeed()
         let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 500), font: nil)

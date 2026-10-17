@@ -28,6 +28,10 @@ public final class TerminalFeed {
     private var modeTail: [UInt8] = []
 
     fileprivate weak var view: TerminalView?
+    #if os(iOS)
+    fileprivate var retainedMobileView: AttachmentTerminalView?
+    public func releaseMobileView() { retainedMobileView = nil }
+    #endif
     private var pending: [Data] = []
 
     public init() {}
@@ -44,6 +48,7 @@ public final class TerminalFeed {
 
     /// Clears the screen and scrollback, before a replay (RIS, then erase scrollback).
     public func reset() {
+        applicationCursor = false; modeTail.removeAll()
         pending.removeAll()
         view?.feed(byteArray: ArraySlice(Array("\u{1b}c\u{1b}[3J".utf8)))
     }
@@ -52,8 +57,11 @@ public final class TerminalFeed {
     private func trackModes(_ data: Data) {
         let bytes = modeTail + Array(data)
         var i = 0
-        while i + 3 < bytes.count {
-            if bytes[i] == 0x1b, bytes[i + 1] == 0x5b, bytes[i + 2] == 0x3f {
+        while i + 1 < bytes.count {
+            if bytes[i] == 0x1b, bytes[i + 1] == 0x63 {
+                applicationCursor = false; i += 2; continue
+            }
+            if i + 3 < bytes.count, bytes[i] == 0x1b, bytes[i + 1] == 0x5b, bytes[i + 2] == 0x3f {
                 var j = i + 3
                 var params: [Int] = []
                 var n = 0
@@ -81,6 +89,35 @@ public final class TerminalFeed {
 
     #if os(iOS)
     public var onPasteFiles: (([NSItemProvider]) -> Void)?
+    /// Optional mobile interaction owner. No desktop behavior changes.
+    public var onTouchView: ((UIScrollView) -> Void)? { didSet { if let view { onTouchView?(view) } } }
+    public var onCancelTouch: (() -> Void)?
+    public var onSelectionStarted: (() -> Void)?
+    public var onSelectionFinished: (() -> Void)?
+    public var onReviewPaste: ((String) -> Void)?
+    public var navigationReady: (() -> Bool)?
+    public var onNavigationInput: ((Data) async -> Bool)?
+    public var onReviewedInput: (@MainActor (Data) async -> Bool)?
+    public var hasSelection: Bool { view?.selectionActive == true }
+    public var bracketedPasteEnabled: Bool { view?.terminalStateSnapshot().bracketedPasteMode == true }
+    public func setLocalScrollOnly(_ local: Bool) { view?.allowMouseReporting = !local }
+    public func setScrollback(_ lines: Int) { view?.changeScrollback(min(100_000, max(100, lines))) }
+    public func setTouchFont(_ size: CGFloat) { view?.font = .monospacedSystemFont(ofSize: min(28, max(9, size)), weight: .regular) }
+    public var currentFontSize: CGFloat { view?.font.pointSize ?? 13 }
+    public func jumpToBottom() {
+        guard let view else { return }
+        view.setContentOffset(CGPoint(x: 0, y: max(0, view.contentSize.height - view.bounds.height)), animated: !UIAccessibility.isReduceMotionEnabled)
+    }
+    public func stopTouchInput() { onCancelTouch?() }
+    public func setInputModifiers(control: Bool, alt: Bool) {
+        view?.controlModifier = control; view?.metaModifier = alt
+    }
+    public func observeModifierReset(_ callback: @escaping () -> Void) -> [NSObjectProtocol] {
+        [Notification.Name.terminalViewControlModifierReset, .terminalViewMetaModifierReset].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: view, queue: .main) { _ in MainActor.assumeIsolated { callback() } }
+        }
+    }
+    public func useCustomKeyBar() { view?.inputAccessoryView = nil; view?.reloadInputViews() }
     public func pasteText(_ text: String) { view?.pasteText(text) }
     /// Brings up the keyboard for this terminal (the keyboard button), or puts it away.
     public func showKeyboard(_ show: Bool = true) {
@@ -111,7 +148,9 @@ public final class TerminalFeed {
 
     #if os(iOS)
     public func selectText() {
-        (view as? AttachmentTerminalView)?.showTextSelection(visibleText())
+        guard let view = view as? AttachmentTerminalView else { return }
+        onCancelTouch?(); onSelectionStarted?()
+        view.showTextSelection(visibleText()) { [weak self] in self?.onSelectionFinished?() }
     }
     #endif
 
@@ -136,13 +175,15 @@ public struct TerminalSurface {
     /// When true the terminal takes keyboard focus (the pane the person switched to).
     let focused: Bool
     let copyOnSelection: Bool
+    let retainMobileState: Bool
 
-    public init(feed: TerminalFeed, theme: TerminalTheme = .default, fontSize: CGFloat = 13, focused: Bool = true, copyOnSelection: Bool = false) {
+    public init(feed: TerminalFeed, theme: TerminalTheme = .default, fontSize: CGFloat = 13, focused: Bool = true, copyOnSelection: Bool = false, retainMobileState: Bool = false) {
         self.feed = feed
         self.theme = theme
         self.fontSize = fontSize
         self.focused = focused
         self.copyOnSelection = copyOnSelection
+        self.retainMobileState = retainMobileState
     }
 
     public final class Coordinator: NSObject, TerminalViewDelegate {
@@ -340,16 +381,18 @@ extension TerminalSurface: NSViewRepresentable {
     }
 }
 #else
-private final class AttachmentTerminalView: TerminalView {
+fileprivate final class AttachmentTerminalView: TerminalView {
     var attachmentPaste: (([NSItemProvider]) -> Bool)?
+    var reviewPaste: ((String) -> Void)?
     private weak var selectionController: UIViewController?
 
-    func showTextSelection(_ text: String) {
+    func showTextSelection(_ text: String, onClose: @escaping () -> Void) {
         guard selectionController == nil, let root = window?.rootViewController else { return }
         var presenter = root
         while let presented = presenter.presentedViewController { presenter = presented }
         let reader = TerminalTextSelectionController(text: text, font: font,
             foreground: nativeForegroundColor, background: nativeBackgroundColor)
+        reader.onClose = onClose
         let navigation = UINavigationController(rootViewController: reader)
         navigation.modalPresentationStyle = .pageSheet
         selectionController = navigation
@@ -366,12 +409,37 @@ private final class AttachmentTerminalView: TerminalView {
             }
         }
         if hasAttachment, attachmentPaste?(providers) == true { return }
+        if let text = UIPasteboard.general.string, let reviewPaste { reviewPaste(text); return }
         super.paste(sender)
     }
 }
 
+/// The representable always owns a fresh container. Only its terminal child moves between
+/// containers, preserving the emulator/scrollback without reusing SwiftUI-owned view identities.
+private final class MobileTerminalContainer: UIView {
+    let terminal: AttachmentTerminalView
+    init(terminal: AttachmentTerminalView) {
+        self.terminal = terminal
+        super.init(frame: .zero)
+        addSubview(terminal)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+    override func layoutSubviews() { super.layoutSubviews(); terminal.frame = bounds }
+}
+
 extension TerminalSurface: UIViewRepresentable {
-    public func makeUIView(context: Context) -> TerminalView {
+    public func makeUIView(context: Context) -> UIView {
+        if retainMobileState, let view = feed.retainedMobileView {
+            view.terminalDelegate = context.coordinator
+            let offset = view.contentOffset
+            configure(view)
+            view.contentOffset = offset
+            context.coordinator.lastTheme = theme
+            let container = MobileTerminalContainer(terminal: view)
+            feed.onTouchView?(view)
+            return container
+        }
+        if !retainMobileState { feed.retainedMobileView = nil }
         let view = AttachmentTerminalView(frame: .zero)
         view.accessibilityIdentifier = "terminal-surface"
         // Explicit OSC 8 links stay visible and respond to touch; plain URLs are detected
@@ -381,30 +449,40 @@ extension TerminalSurface: UIViewRepresentable {
             guard let handler = feed?.onPasteFiles else { return false }
             handler(providers); return true
         }
+        view.reviewPaste = { [weak feed] text in
+            if let review = feed?.onReviewPaste { review(text) } else { feed?.pasteText(text) }
+        }
         view.terminalDelegate = context.coordinator
         configure(view)
         context.coordinator.lastTheme = theme
         view.contentInsetAdjustmentBehavior = .never
-        view.inputAccessoryView = TerminalKeyBar(terminal: view, feed: feed)
-        let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pinched))
-        view.addGestureRecognizer(pinch)
-        // Two-finger swipe left or right: next or previous pane. One finger stays for scrolling and selecting.
-        view.panGestureRecognizer.maximumNumberOfTouches = 1
-        for direction in [UISwipeGestureRecognizer.Direction.left, .right] {
-            let swipe = UISwipeGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.swiped))
-            swipe.direction = direction
-            swipe.numberOfTouchesRequired = 2
-            pinch.require(toFail: swipe)
-            view.addGestureRecognizer(swipe)
+        if !retainMobileState {
+            view.inputAccessoryView = TerminalKeyBar(terminal: view, feed: feed)
+            let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pinched))
+            pinch.name = "xtermx-legacy-pinch"
+            view.addGestureRecognizer(pinch)
+            // Two-finger swipe left or right: next or previous pane. One finger stays for scrolling and selecting.
+            view.panGestureRecognizer.maximumNumberOfTouches = 1
+            for direction in [UISwipeGestureRecognizer.Direction.left, .right] {
+                let swipe = UISwipeGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.swiped))
+                swipe.direction = direction
+                swipe.numberOfTouchesRequired = 2
+                pinch.require(toFail: swipe)
+                swipe.name = "xtermx-legacy-session-swipe"
+                view.addGestureRecognizer(swipe)
+            }
+            context.coordinator.arrows = ArrowPadGesture(terminal: view, feed: feed)
         }
-        context.coordinator.arrows = ArrowPadGesture(terminal: view, feed: feed)
         feed.bind(view)
+        if retainMobileState { feed.retainedMobileView = view }
+        feed.onTouchView?(view)
         // The pane the person switched to keeps the keyboard up.
         if focused { DispatchQueue.main.async { _ = view.becomeFirstResponder() } }
-        return view
+        return MobileTerminalContainer(terminal: view)
     }
 
-    public func updateUIView(_ view: TerminalView, context: Context) {
+    public func updateUIView(_ container: UIView, context: Context) {
+        guard let view = (container as? MobileTerminalContainer)?.terminal else { return }
         if view.font.pointSize != fontSize || context.coordinator.lastTheme != theme { configure(view); context.coordinator.lastTheme = theme }
     }
 }

@@ -4,10 +4,12 @@ import UIKit
 /// Static, local text: output updates cannot move the selection and editing cannot reach a PTY.
 @MainActor
 final class TerminalTextSelectionController: UIViewController, UITextViewDelegate {
+    var onClose: (() -> Void)?
     private let text: String
     private let terminalFont: UIFont
     private let foreground: UIColor
     private let background: UIColor
+    private let content = UITextView()
 
     init(text: String, font: UIFont, foreground: UIColor, background: UIColor) {
         self.text = text
@@ -32,7 +34,6 @@ final class TerminalTextSelectionController: UIViewController, UITextViewDelegat
         hint.adjustsFontForContentSizeCategory = true
         hint.textColor = foreground.withAlphaComponent(0.75)
         hint.numberOfLines = 0
-        let content = UITextView()
         content.accessibilityIdentifier = "terminal-selection-text"
         content.isEditable = false
         content.isSelectable = true
@@ -44,6 +45,7 @@ final class TerminalTextSelectionController: UIViewController, UITextViewDelegat
         content.text = text
         content.textContainerInset = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
         content.alwaysBounceVertical = true
+        updateCopyMenu()
         for child in [hint, content] {
             child.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(child)
@@ -57,6 +59,28 @@ final class TerminalTextSelectionController: UIViewController, UITextViewDelegat
             content.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             content.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         ])
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        onClose?(); onClose = nil
+    }
+
+    func textViewDidChangeSelection(_ textView: UITextView) { updateCopyMenu() }
+    private func updateCopyMenu() {
+        let full = content.text as NSString? ?? ""
+        let position = min(content.selectedRange.location, full.length)
+        let lineRange = full.lineRange(for: NSRange(location: position, length: 0))
+        let line = full.substring(with: lineRange).trimmingCharacters(in: .newlines)
+        let selected = content.selectedRange.length > 0 && NSMaxRange(content.selectedRange) <= full.length
+            ? full.substring(with: content.selectedRange) : nil
+        let command = selected ?? ["$ ", "% ", "> ", "❯ "].first(where: { line.hasPrefix($0) }).map { String(line.dropFirst($0.count)) }
+        let copyLine = UIAction(title: NSLocalizedString("Copy Line", comment: "Selection action")) { _ in UIPasteboard.general.string = line }
+        let copyCommand = UIAction(title: NSLocalizedString("Copy Command", comment: "Selection action"), attributes: command == nil ? .disabled : []) { _ in
+            if let command { UIPasteboard.general.string = command }
+        }
+        let selectAll = UIAction(title: NSLocalizedString("Select All", comment: "Selection action")) { [weak self] _ in self?.content.selectAll(nil) }
+        navigationItem.leftBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: UIMenu(children: [copyLine, copyCommand, selectAll]))
     }
 
     private func webLink(_ item: UITextItem) -> URL? {
