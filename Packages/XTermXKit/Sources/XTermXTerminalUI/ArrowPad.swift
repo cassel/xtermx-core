@@ -74,12 +74,10 @@ final class ArrowPadGesture: NSObject {
     /// About 4 keys a second just past the dead zone, up to 25 a second 80 points out.
     private func schedule() {
         let interval = max(0.04, 0.25 - Double(distance - Self.deadZone) * 0.0033)
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.direction != nil else { return }
-                self.send()
-                self.schedule()
-            }
+        timer = TerminalRepeatTimer.schedule(after: interval) { [weak self] in
+            guard let self, self.direction != nil else { return }
+            self.send()
+            self.schedule()
         }
     }
 

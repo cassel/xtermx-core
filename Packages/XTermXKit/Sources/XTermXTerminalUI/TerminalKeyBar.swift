@@ -2,6 +2,17 @@
 import SwiftTerm
 import UIKit
 
+/// Repeat clocks must remain scheduled while UIKit tracks a held finger.
+@MainActor enum TerminalRepeatTimer {
+    static func schedule(after interval: TimeInterval, repeats: Bool = false, action: @escaping @MainActor () -> Void) -> Timer {
+        let timer = Timer(timeInterval: interval, repeats: repeats) { _ in
+            MainActor.assumeIsolated { action() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        return timer
+    }
+}
+
 /// The row above the keyboard, as in Termius: esc, sticky ctrl and alt (tap for the next key,
 /// double-tap to lock), tab, arrows that repeat while held, the symbols a phone keyboard hides,
 /// paste, and a key to put the keyboard away.
@@ -127,12 +138,8 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
             UIDevice.current.playInputClick()
             action()
             self?.repeatTimer?.invalidate()
-            self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { _ in
-                MainActor.assumeIsolated {
-                    self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.07, repeats: true) { _ in
-                        MainActor.assumeIsolated { action() }
-                    }
-                }
+            self?.repeatTimer = TerminalRepeatTimer.schedule(after: 0.4) { [weak self] in
+                self?.repeatTimer = TerminalRepeatTimer.schedule(after: 0.07, repeats: true, action: action)
             }
         }, for: .touchDown)
         b.addAction(UIAction { [weak self] _ in self?.repeatTimer?.invalidate() }, for: [.touchUpInside, .touchUpOutside, .touchCancel])
