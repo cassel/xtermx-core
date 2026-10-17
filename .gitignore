@@ -1,0 +1,25 @@
+# Disk images and other large binaries stay out of the repository.
+*.dmg
+
+# Generated: run `xcodegen generate`.
+XTermX.xcodeproj/
+
+# Build output
+.build/
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+
+.DS_Store
+*.log
+
+# Local credentials and Python tooling artifacts
+.env
+.env.*
+*.p8
+*.p12
+*.pem
+*.mobileprovision
+__pycache__/

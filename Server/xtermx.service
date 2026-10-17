@@ -1,0 +1,16 @@
+[Unit]
+Description=XTermX node (terminals for coding agents, reachable from your devices)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@BIN@ serve --quiet @ARGS@
+Restart=on-failure
+RestartSec=3
+# Agents in its terminals run as you, in your home, with your keys and logins.
+WorkingDirectory=%h
+Environment=LANG=C.UTF-8
+
+[Install]
+WantedBy=default.target

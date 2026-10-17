@@ -1,0 +1,61 @@
+import Foundation
+
+/// Host-wide permissions for paired devices. New capabilities start off until the owner chooses them.
+public struct RemotePermissions: Codable, Sendable, Equatable {
+    public var openSessions: Bool
+    public var manageRooms: Bool
+    public var sendFiles: Bool
+
+    public init(openSessions: Bool = true, manageRooms: Bool = false, sendFiles: Bool = false) {
+        self.openSessions = openSessions; self.manageRooms = manageRooms; self.sendFiles = sendFiles
+    }
+}
+
+public struct RemoteRoom: Codable, Sendable, Identifiable, Equatable {
+    public var id: String
+    public var name: String
+    public var paneIDs: [String]
+    public init(id: String, name: String, paneIDs: [String]) { self.id = id; self.name = name; self.paneIDs = paneIDs }
+}
+
+public enum RemoteRoomAction: Codable, Sendable {
+    case rename(id: String, name: String)
+    case message(id: String, text: String, paneIDs: [String], execute: Bool)
+
+    public var roomID: String {
+        switch self { case .rename(let id, _), .message(let id, _, _, _): id }
+    }
+
+    /// A client may only address members of the chosen room, and may not send unbounded text.
+    public func isValid(in rooms: [RemoteRoom]) -> Bool {
+        guard let room = rooms.first(where: { $0.id == roomID }) else { return false }
+        switch self {
+        case .rename(_, let name):
+            return !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf8.count <= 120
+                && !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        case .message(_, let text, let ids, _):
+            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && text.utf8.count <= 32_768
+                && !ids.isEmpty && Set(ids).count == ids.count && Set(ids).isSubset(of: Set(room.paneIDs))
+        }
+    }
+}
+
+public struct ReceivedFile: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var name: String
+    public var bytes: Int
+    public var path: String?
+    public init(id: String, name: String, bytes: Int, path: String? = nil) { self.id = id; self.name = name; self.bytes = bytes; self.path = path }
+}
+
+public enum RemoteFileRules {
+    public static let maximumBytes = 4 * 1024 * 1024
+    public static let maximumTransferBytes = 64 * 1024 * 1024
+    public static let chunkBytes = 256 * 1024
+    public static let maximumStoredBytes = 100 * 1024 * 1024
+    public static func validName(_ name: String) -> Bool {
+        !name.isEmpty && name.utf8.count <= 180 && name != "." && name != ".."
+            && !name.contains("/") && !name.contains("\\")
+            && !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+    }
+}
