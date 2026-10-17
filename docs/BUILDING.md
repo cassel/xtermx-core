@@ -71,3 +71,9 @@ Validated on 2026-10-17 from the exported public source tree:
 - Export manifest hashes and relative documentation links: checked.
 
 The initial validation reused local dependency/build caches; the hooks integration test was given the expected `.build/debug/xtermx` path to the freshly built public CLI. No credentials or private application sources were needed. Physical-device UI testing and Linux runtime testing remain separate from these checks.
+
+## Updated development download — build 202610171857
+
+The updated public source passed 190 Swift tests in 53 suites on macOS. The download is a universal Release build for Apple Silicon and Intel, requiring macOS 15+. It includes current host transfer settings and terminal replay fixes. The release contains build provenance, third-party notices and SHA-256 checksums.
+
+It is ad-hoc signed and not notarized; macOS may block first launch. Intel runtime and Linux runtime have not been validated for this download. The proprietary iOS and Watch applications are excluded.
