@@ -119,6 +119,8 @@ public final class TerminalFeed {
     }
     public func useCustomKeyBar() { view?.inputAccessoryView = nil; view?.reloadInputViews() }
     public func pasteText(_ text: String) { view?.pasteText(text) }
+    /// User-initiated paste follows the existing attachment and text-review routing.
+    public func pasteClipboard() { view?.paste(nil) }
     /// Brings up the keyboard for this terminal (the keyboard button), or puts it away.
     public func showKeyboard(_ show: Bool = true) {
         guard let view else { return }

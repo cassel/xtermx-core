@@ -149,6 +149,9 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
     static func config(title: String?, on: Bool, locked: Bool) -> UIButton.Configuration {
         var config = on ? UIButton.Configuration.filled() : UIButton.Configuration.gray()
         config.cornerStyle = .medium
+        config.baseForegroundColor = on ? .white : .secondaryLabel
+        if !on { config.background.backgroundColor = .secondarySystemFill }
+        config.background.backgroundInsets = NSDirectionalEdgeInsets(top: 6, leading: 2, bottom: 6, trailing: 2)
         config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10)
         if let title {
             var text = AttributedString(title, attributes: AttributeContainer([.font: UIFont.monospacedSystemFont(ofSize: 15, weight: on ? .bold : .medium)]))
