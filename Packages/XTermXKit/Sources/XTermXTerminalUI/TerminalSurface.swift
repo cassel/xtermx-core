@@ -146,10 +146,11 @@ public struct TerminalSurface {
         }
         public func scrolled(source: TerminalView, position: Double) {}
         public func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
-            guard let url = URL(string: link) else { return }
             #if os(macOS)
+            guard let url = SelectionCopyTerminalView.browserURL(link) else { return }
             NSWorkspace.shared.open(url)
             #else
+            guard let url = URL(string: link) else { return }
             UIApplication.shared.open(url)
             #endif
         }
@@ -208,10 +209,92 @@ public struct TerminalSurface {
 }
 
 #if os(macOS)
-private final class SelectionCopyTerminalView: TerminalView {
+/// Native selection takes priority over terminal mouse capture. Option keeps TUI mouse controls.
+final class SelectionCopyTerminalView: TerminalView {
     var copyOnSelection = false
+
+    static func browserURL(_ link: String) -> URL? {
+        guard let url = URL(string: link),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host, !host.isEmpty else { return nil }
+        return url
+    }
+
+    override init(frame: CGRect, font: NSFont? = nil) {
+        super.init(frame: frame, font: font)
+        allowMouseReporting = false
+        linkReporting = .implicit
+        linkHighlightMode = .hoverWithModifier
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// SwiftTerm uses Command for links. Translate only pointer/modifier events, never typed keys.
+    static func linkEvent(_ event: NSEvent) -> NSEvent {
+        guard [.flagsChanged, .leftMouseDown, .leftMouseDragged, .leftMouseUp].contains(event.type),
+              event.modifierFlags.contains(.control), let copy = event.cgEvent?.copy() else { return event }
+        copy.flags.remove(.maskControl)
+        copy.flags.insert(.maskCommand)
+        return NSEvent(cgEvent: copy) ?? event
+    }
+
+    private var modifierMonitor: Any?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
+        modifierMonitor = nil
+        guard window != nil else { return }
+        // SwiftTerm's flagsChanged is not open. Scope the adapter to this view's window;
+        // keyboard events (including Ctrl+C) retain their original modifiers.
+        modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .mouseMoved]) { [weak self] event in
+            guard let self, let window = self.window, event.window === window else { return event }
+            let point = self.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            if self.bounds.contains(point) {
+                if event.type == .flagsChanged {
+                    // Let the original event reach the app's shortcut monitors and the
+                    // terminal's keyboard protocol first; never consume Control releases.
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, let window = self.window,
+                              self.bounds.contains(self.convert(window.mouseLocationOutsideOfEventStream, from: nil)) else { return }
+                        self.updateLinkPreview(with: event)
+                    }
+                } else if event.modifierFlags.contains(.control) {
+                    // Entering a pane with Control already held must highlight too.
+                    self.updateLinkPreview(with: event)
+                }
+            }
+            return event
+        }
+    }
+
+    private func updateLinkPreview(with event: NSEvent) {
+        // Key code zero is not a modifier key: this updates the link renderer without
+        // inventing another keyboard-protocol press/release for the terminal program.
+        guard let modifiers = NSEvent.keyEvent(with: .flagsChanged, location: event.locationInWindow,
+            modifierFlags: event.modifierFlags, timestamp: event.timestamp,
+            windowNumber: event.windowNumber, context: nil, characters: "",
+            charactersIgnoringModifiers: "", isARepeat: false, keyCode: 0) else { return }
+        flagsChanged(with: Self.linkEvent(modifiers))
+    }
+
+    deinit {
+        if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        allowMouseReporting = event.modifierFlags.contains(.option) && !event.modifierFlags.contains(.control)
+        super.mouseDown(with: Self.linkEvent(event))
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        super.mouseDragged(with: Self.linkEvent(event))
+    }
+
     override func mouseUp(with event: NSEvent) {
-        super.mouseUp(with: event)
+        defer { allowMouseReporting = false }
+        super.mouseUp(with: Self.linkEvent(event))
         if copyOnSelection, selectionActive, selectedRange().length > 0 { copy(self) }
     }
 }

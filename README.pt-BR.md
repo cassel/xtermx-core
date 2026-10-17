@@ -121,6 +121,10 @@ O alcance depende da sua rede local, VPN e firewall. XTermX não fornece relay o
 
 O servidor MCP local fornece criação de panes com aprovação, leitura/envio com escopo, espera por resultados e coordenação de agentes nas Control Rooms. `pane_close` é recusado: fechar panes é uma ação da pessoa. O servidor usa loopback, tokens por pane e rejeita origens de navegador. Habilitar panes criados por agentes é opcional.
 
+## Selecionar texto e abrir links
+
+No Mac, arraste sobre o texto do terminal e pressione **⌘C** para copiar, inclusive em programas que capturam o mouse, como tmux. Segure **Control** sobre um link para destacá-lo e clique para abrir no navegador; **⌘clique** também funciona. Segure **Option** ao clicar ou arrastar para enviar o mouse ao programa do terminal. A cópia automática fica em **Configurações → Terminal → Copiar ao selecionar texto**.
+
 ## Desenvolvimento e contribuição
 
 O projeto está em desenvolvimento ativo. O snapshot inicial veio de uma integração privada com 165 testes Swift aprovados e builds Mac/iOS/Watch verdes. Isso não certifica toda combinação de dispositivo físico ou distribuição Linux. A validação da árvore pública está em [BUILDING.md](docs/BUILDING.md).

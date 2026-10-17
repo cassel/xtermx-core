@@ -109,6 +109,8 @@ struct TerminalSettings: View {
             PaneDictationSettings()
             SettingsCard("Select and keep", "Copy selected terminal text when you finish selecting with the mouse.") {
                 Toggle("Copy when selecting text", isOn: $model.copyOnSelection).toggleStyle(.switch)
+                Text("Drag to select, then ⌘C to copy. Hold Control to highlight links and click to open. Hold Option to send clicks to terminal programs.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             SettingsCard("Room for each pane", "Choose when split sizes reset and how dense a tab can become.") {
                 Toggle("Balance after adding a pane", isOn: $model.balanceAfterSplit).toggleStyle(.switch)

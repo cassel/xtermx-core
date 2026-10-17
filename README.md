@@ -161,6 +161,10 @@ Defaults below; the Mac app's **Settings → Shortcuts** shows the active bindin
 | ⌘⇧G | Remote access and devices |
 | ⌘W | Close the focused pane |
 
+## Selecting text and opening links
+
+On Mac, drag across terminal text and press **⌘C** to copy, including in mouse-aware programs such as tmux. Hold **Control** while hovering to underline a detected web link, then click to open it in your browser; **⌘click** also works. Hold **Option** while clicking or dragging to send mouse input to a terminal program. Enable automatic copying in **Settings → Terminal → Copy when selecting text**.
+
 ## Project structure
 
 ```text

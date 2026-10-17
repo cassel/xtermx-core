@@ -22358,6 +22358,34 @@
     },
     "cassel.us": {
       "shouldTranslate": false
+    },
+    "Drag to select, then ⌘C to copy. Hold Control to highlight links and click to open. Hold Option to send clicks to terminal programs.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drag to select, then ⌘C to copy. Hold Control to highlight links and click to open. Hold Option to send clicks to terminal programs."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arraste para selecionar e use ⌘C para copiar. Segure Control para destacar links e clique para abrir. Segure Option para enviar cliques aos programas do terminal."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrastra para seleccionar y usa ⌘C para copiar. Mantén Control para resaltar enlaces y haz clic para abrirlos. Mantén Option para enviar clics a los programas del terminal."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拖动以选择文本，然后按 ⌘C 复制。按住 Control 高亮链接，点击即可打开。按住 Option 可将点击发送给终端程序。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

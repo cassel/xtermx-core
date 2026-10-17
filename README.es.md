@@ -161,6 +161,10 @@ Estos son los valores predeterminados; **Settings → Shortcuts** muestra las co
 | ⌘⇧G | Acceso remoto y dispositivos |
 | ⌘W | Cerrar el panel enfocado |
 
+## Seleccionar texto y abrir enlaces
+
+En Mac, arrastra sobre el texto del terminal y pulsa **⌘C** para copiar, incluso en programas que capturan el ratón, como tmux. Mantén **Control** sobre un enlace para resaltarlo y haz clic para abrirlo en el navegador; **⌘clic** también funciona. Mantén **Option** al hacer clic o arrastrar para enviar el ratón al programa del terminal. Activa la copia automática en **Ajustes → Terminal → Copiar al seleccionar texto**.
+
 ## Estructura del proyecto
 
 ```text
