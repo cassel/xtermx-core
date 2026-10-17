@@ -68,7 +68,7 @@ Las cuentas, suscripciones e instalaciones de las CLIs son tuyas. XTermX no incl
 
 ## Compilar y ejecutar
 
-Actualmente, el repositorio permite compilar desde el código fuente; no presupongas que existe un instalador firmado o una versión en la App Store.
+[Descargar la compilación de desarrollo para Mac](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.17) — universal Apple Silicon + Intel, macOS 15+. Tiene firma ad-hoc y **no está notarizada por Apple**; macOS puede bloquear la primera apertura. Las instrucciones para compilar siguen abajo. No incluye las apps propietarias de iOS/Watch.
 
 ### Mac
 
