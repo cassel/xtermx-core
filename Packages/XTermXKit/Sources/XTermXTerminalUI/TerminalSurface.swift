@@ -241,7 +241,7 @@ public struct TerminalSurface {
         public func scrolled(source: TerminalView, position: Double) {}
         public func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
             #if os(macOS)
-            guard let url = SelectionCopyTerminalView.browserURL(link) else { return }
+            guard let url = SelectionCopyTerminalView.fileOrBrowserURL(link) else { return }
             NSWorkspace.shared.open(url)
             #else
             guard let url = URL(string: link),
@@ -312,6 +312,24 @@ final class SelectionCopyTerminalView: TerminalView {
         guard let url = URL(string: link),
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
               let host = url.host, !host.isEmpty else { return nil }
+        return url
+    }
+
+    /// Local documents need file URLs: URL(string:) treats an absolute path as a
+    /// relative URL and can lose filename characters such as # and %.
+    static func fileOrBrowserURL(_ link: String) -> URL? {
+        if let url = browserURL(link) { return url }
+        let url: URL
+        if link.hasPrefix("/") || link.hasPrefix("~/") {
+            url = URL(fileURLWithPath: (link as NSString).expandingTildeInPath)
+        } else if let file = URL(string: link), file.isFileURL,
+                  file.host == nil || file.host == "" || file.host == "localhost",
+                  file.query == nil, file.fragment == nil {
+            url = file
+        } else {
+            return nil
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         return url
     }
 

@@ -90,6 +90,49 @@ import Testing
         }
     }
 
+    @Test func localFilesAndFoldersUseFileURLsWithoutLosingFilenameCharacters() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for name in ["wireframes.pdf", "relatório #1 100%.txt", "image.png", "source.swift"] {
+            let file = folder.appendingPathComponent(name)
+            try Data("fixture".utf8).write(to: file)
+            for link in [file.path, file.absoluteString] {
+                let url = SelectionCopyTerminalView.fileOrBrowserURL(link)
+                #expect(url?.isFileURL == true)
+                #expect(url?.path == file.path)
+            }
+        }
+        #expect(SelectionCopyTerminalView.fileOrBrowserURL(folder.path)?.path == folder.path)
+        #expect(SelectionCopyTerminalView.fileOrBrowserURL(folder.absoluteString)?.isFileURL == true)
+        #expect(SelectionCopyTerminalView.fileOrBrowserURL("~/")?.path == NSHomeDirectory())
+    }
+
+    @Test func fileOpeningRejectsMissingPathsRemoteFileHostsAndCustomSchemes() {
+        for link in ["/nonexistent-" + UUID().uuidString, "file://remote.example/etc/passwd",
+                     "relative.pdf", "javascript:alert(1)", "xtermx://pair", "https:missing-host"] {
+            #expect(SelectionCopyTerminalView.fileOrBrowserURL(link) == nil)
+        }
+        #expect(SelectionCopyTerminalView.fileOrBrowserURL("https://example.com/document.pdf")?.scheme == "https")
+    }
+
+    @Test func commandAndControlClickDispatchLocalPathsWithoutSendingTerminalInput() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pdf")
+        try Data("fixture".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let view = SelectionCopyTerminalView(frame: CGRect(x: 0, y: 0, width: 1200, height: 500))
+        let delegate = Delegate()
+        view.terminalDelegate = delegate
+        view.feed(text: file.path)
+        for flags in [NSEvent.ModifierFlags.command, .control] {
+            view.mouseDown(with: event(.leftMouseDown, flags: flags))
+            view.mouseUp(with: event(.leftMouseUp, flags: flags))
+        }
+        #expect(delegate.links == [file.path, file.path])
+        await drainEvents()
+        #expect(delegate.input.isEmpty)
+    }
+
     @Test func controlHoverUsesLinkModifiersWithoutChangingTheOriginalEvent() {
         let flags = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: [.control, .shift],
                                     timestamp: 0, windowNumber: 0, context: nil, characters: "",
