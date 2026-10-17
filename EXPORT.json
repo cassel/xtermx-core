@@ -116,7 +116,7 @@
     "Packages/XTermXKit/Sources/XTermXTerminalUI/ArrowPad.swift": "868857dab0e64898054941f650c3d80a3dcf0cb16a43e532c40d87b16dd4def3",
     "Packages/XTermXKit/Sources/XTermXTerminalUI/SSHFiles.swift": "d08d91728080577ee9d346f5bebe90395fb6e33d40a7d7729b5f51dd6c8758bf",
     "Packages/XTermXKit/Sources/XTermXTerminalUI/SSHSession.swift": "a8723db2a7f89147a3192d24e979fc77e0d0a4f4b95ae75e0d2a7a7819f9f773",
-    "Packages/XTermXKit/Sources/XTermXTerminalUI/TerminalKeyBar.swift": "b8d214da4919464c3168fa33b4cfedd64b0109d4ffb89b826ab1ba11765aac34",
+    "Packages/XTermXKit/Sources/XTermXTerminalUI/TerminalKeyBar.swift": "7708395f6c750d40707dd702d451ede8bf09984240377e8dbb7c45aa1d605b30",
     "Packages/XTermXKit/Sources/XTermXTerminalUI/TerminalSurface.swift": "b2df27278eb6b4a487643d7a898fa5a3cdffe78ac779479ee0ead326bfb74152",
     "Packages/XTermXKit/Sources/XTermXTerminalUI/TerminalTextSelection.swift": "6bf2373adb66c46b14c5120ab396ccd6c7070a7e0c54f4b3056bff3d49d61dcf",
     "Packages/XTermXKit/Sources/xtermx/main.swift": "88898d0c8140486ee588bd1eccbf34b52c5bf9c2368107e6ea6384bb8515dd67",

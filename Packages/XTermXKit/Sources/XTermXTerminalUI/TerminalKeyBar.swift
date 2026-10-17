@@ -86,16 +86,16 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         row.addArrangedSubview(key(symbol: "keyboard.chevron.compact.down", label: "Hide keyboard") { [weak self] in
             _ = self?.terminal?.resignFirstResponder()
         })
-        row.addArrangedSubview(key("esc") { [weak self] in self?.send([0x1b]) })
-        ctrl = key("ctrl") { [weak self] in self?.toggle(ctrl: true) }
-        alt = key("alt") { [weak self] in self?.toggle(ctrl: false) }
+        row.addArrangedSubview(key("⎋", label: "Escape") { [weak self] in self?.send([0x1b]) })
+        ctrl = key("⌃", label: "Control") { [weak self] in self?.toggle(ctrl: true) }
+        alt = key("⌥", label: "Option") { [weak self] in self?.toggle(ctrl: false) }
         for (button, lock) in [(ctrl!, #selector(lockCtrl)), (alt!, #selector(lockAlt))] {
             let doubleTap = UITapGestureRecognizer(target: self, action: lock)
             doubleTap.numberOfTapsRequired = 2
             button.addGestureRecognizer(doubleTap)
             row.addArrangedSubview(button)
         }
-        row.addArrangedSubview(key("tab") { [weak self] in self?.send([0x09]) })
+        row.addArrangedSubview(key("⇥", label: "Tab") { [weak self] in self?.send([0x09]) })
         for (symbol, label, normal, app) in [
             ("arrow.left", "Left", EscapeSequences.moveLeftNormal, EscapeSequences.moveLeftApp),
             ("arrow.up", "Up", EscapeSequences.moveUpNormal, EscapeSequences.moveUpApp),
@@ -201,8 +201,8 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         guard let terminal else { return }
         if ctrlLocked && !terminal.controlModifier { terminal.controlModifier = true }
         if altLocked && !terminal.metaModifier { terminal.metaModifier = true }
-        ctrl.configuration = Self.config(title: "ctrl", on: terminal.controlModifier, locked: ctrlLocked)
-        alt.configuration = Self.config(title: "alt", on: terminal.metaModifier, locked: altLocked)
+        ctrl.configuration = Self.config(title: "⌃", on: terminal.controlModifier, locked: ctrlLocked)
+        alt.configuration = Self.config(title: "⌥", on: terminal.metaModifier, locked: altLocked)
     }
 }
 #endif
