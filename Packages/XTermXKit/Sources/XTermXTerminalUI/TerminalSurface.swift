@@ -362,10 +362,15 @@ final class SelectionCopyTerminalView: TerminalView {
         guard window != nil else { return }
         // SwiftTerm's flagsChanged is not open. Scope the adapter to this view's window;
         // keyboard events (including Ctrl+C) retain their original modifiers.
-        modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .mouseMoved]) { [weak self] event in
+        modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .mouseMoved, .scrollWheel]) { [weak self] event in
             guard let self, let window = self.window, event.window === window else { return event }
-            let point = self.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            let position = event.type == .scrollWheel ? event.locationInWindow : window.mouseLocationOutsideOfEventStream
+            let point = self.convert(position, from: nil)
             if self.bounds.contains(point) {
+                if event.type == .scrollWheel {
+                    self.handleScrollWheel(event)
+                    return nil
+                }
                 if event.type == .flagsChanged {
                     // Let the original event reach the app's shortcut monitors and the
                     // terminal's keyboard protocol first; never consume Control releases.
@@ -380,6 +385,24 @@ final class SelectionCopyTerminalView: TerminalView {
                 }
             }
             return event
+        }
+    }
+
+    /// Wheel reporting is independent of click capture. Keep SwiftTerm's native
+    /// precise-delta accumulator and momentum, but never its arrow-key fallback.
+    func handleScrollWheel(_ event: NSEvent) {
+        let previous = allowMouseReporting
+        defer { allowMouseReporting = previous }
+        allowMouseReporting = !selectionActive
+        if currentMouseMode == .off || selectionActive {
+            // Option requests native local history and suppresses alternate-screen
+            // cursor keys. This copy never changes modifiers on real key events.
+            guard let copy = event.cgEvent?.copy() else { return }
+            copy.flags.insert(.maskAlternate)
+            guard let local = NSEvent(cgEvent: copy) else { return }
+            scrollWheel(with: local)
+        } else {
+            scrollWheel(with: event)
         }
     }
 

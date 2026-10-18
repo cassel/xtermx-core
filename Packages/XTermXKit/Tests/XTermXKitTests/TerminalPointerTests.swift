@@ -31,6 +31,42 @@ import Testing
         }
     }
 
+    private func wheel(_ delta: Int32) -> NSEvent {
+        let event = CGEvent(scrollWheelEvent2Source: nil, units: .line,
+                            wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0)!
+        event.location = CGPoint(x: 30, y: 30)
+        return NSEvent(cgEvent: event)!
+    }
+
+    @Test func wheelUsesMouseProtocolWithoutEnablingClickCapture() async {
+        let view = SelectionCopyTerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 500))
+        let delegate = Delegate(); view.terminalDelegate = delegate
+        view.feed(text: "\u{1b}[?1049h\u{1b}[?1002h\u{1b}[?1006h")
+        view.handleScrollWheel(wheel(1))
+        view.handleScrollWheel(wheel(-1))
+        await drainEvents()
+        let bytes = String(decoding: delegate.input, as: UTF8.self)
+        #expect(bytes.contains("\u{1b}[<64;"))
+        #expect(bytes.contains("\u{1b}[<65;"))
+        #expect(!bytes.contains("\u{1b}[A") && !bytes.contains("\u{1b}[B"))
+        #expect(!view.allowMouseReporting)
+    }
+
+    @Test func wheelNeverBecomesArrowKeysWhenMouseTrackingIsOff() async {
+        let view = SelectionCopyTerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 500))
+        let delegate = Delegate(); view.terminalDelegate = delegate
+        view.feed(text: "\u{1b}[?1049h\u{1b}[?1h")
+        view.handleScrollWheel(wheel(1)); view.handleScrollWheel(wheel(-1))
+        await drainEvents()
+        #expect(delegate.input.isEmpty)
+        view.feed(text: "\u{1b}[?1049l" + String(repeating: "history\r\n", count: 100))
+        let before = view.terminalStateSnapshot().viewportRow
+        view.handleScrollWheel(wheel(3))
+        #expect(view.terminalStateSnapshot().viewportRow < before)
+        await drainEvents()
+        #expect(delegate.input.isEmpty)
+    }
+
     @Test func draggingSelectsTextEvenWhenTheProgramCapturesTheMouse() async {
         let view = SelectionCopyTerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 500))
         let delegate = Delegate()
