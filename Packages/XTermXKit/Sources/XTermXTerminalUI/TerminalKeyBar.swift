@@ -15,7 +15,7 @@ import UIKit
 
 /// The row above the keyboard, as in Termius: esc, sticky ctrl and alt (tap for the next key,
 /// double-tap to lock), tab, arrows that repeat while held, the symbols a phone keyboard hides,
-/// paste, and a key to put the keyboard away.
+/// and a key to put the keyboard away. Paste stays in the native editing menu.
 @MainActor
 final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
     private weak var terminal: TerminalView?
@@ -111,7 +111,6 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
             row.addArrangedSubview(key(text) { [weak self] in self?.terminal?.insertText(text) })
         }
         row.addArrangedSubview(key(symbol: "text.cursor", label: NSLocalizedString("Select text and links", comment: "Terminal selection button")) { [weak self] in self?.feed.selectText() })
-        row.addArrangedSubview(key(symbol: "doc.on.clipboard", label: "Paste") { [weak self] in self?.terminal?.paste(nil) })
     }
 
     private func button(_ title: String?, symbol: String?, label: String?) -> UIButton {

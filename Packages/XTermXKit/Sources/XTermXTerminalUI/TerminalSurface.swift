@@ -148,6 +148,8 @@ public final class TerminalFeed {
     public func pasteText(_ text: String) { view?.pasteText(text) }
     /// User-initiated paste follows the existing attachment and text-review routing.
     public func pasteClipboard() { view?.paste(nil) }
+    /// Whether this terminal owns keyboard focus, including a retained mobile view.
+    public var keyboardFocused: Bool { view?.isFirstResponder ?? false }
     /// Brings up the keyboard for this terminal (the keyboard button), or puts it away.
     public func showKeyboard(_ show: Bool = true) {
         guard let view else { return }
