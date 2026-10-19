@@ -51,7 +51,7 @@ O código dos aplicativos iOS e Watch e seus materiais de assinatura **não faze
 
 ## Compilar o Mac
 
-[Baixar a versão de desenvolvimento para Mac](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.19-0910) — universal Apple Silicon + Intel, macOS 15+. Possui assinatura ad-hoc e **não é notarizada pela Apple**; o macOS pode impedir a primeira abertura. O download não inclui os apps proprietários de iOS/Watch.
+[Baixar a versão de desenvolvimento para Mac](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.19-1300) — universal Apple Silicon + Intel, macOS 15+. Possui assinatura ad-hoc e **não é notarizada pela Apple**; o macOS pode impedir a primeira abertura. O download não inclui os apps proprietários de iOS/Watch.
 
 Para compilar: **macOS 15+**, **Xcode 26+** e **XcodeGen**.
 
