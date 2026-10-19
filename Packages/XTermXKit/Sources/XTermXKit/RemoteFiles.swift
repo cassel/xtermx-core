@@ -12,6 +12,7 @@ public struct SSHRemoteFile: Identifiable, Sendable, Equatable {
 
 public enum SSHFileRules {
     public static let transferLimit = 64 * 1024 * 1024
+    public static let uploadLimit = 1024 * 1024 * 1024
     public static func validName(_ name: String) -> Bool {
         !name.isEmpty && name != "." && name != ".." && name.utf8.count <= 255
             && !name.contains(where: { $0 == "/" || $0 == "\\" || $0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) })

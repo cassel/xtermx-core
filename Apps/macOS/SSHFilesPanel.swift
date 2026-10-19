@@ -67,7 +67,7 @@ struct SSHFilesPanel: View {
             HStack {
                 Button("Upload a file…") { upload() }
                 Spacer()
-                Text("64 MB per file").font(.caption2).foregroundStyle(.secondary)
+                Text("Upload: 1 GB · Download: 64 MB").font(.caption2).foregroundStyle(.secondary)
             }
         }.padding(10).frame(minWidth: 260, idealWidth: 310, maxWidth: 450)
         .disabled(busy || session.status != .connected)
@@ -120,10 +120,7 @@ struct SSHFilesPanel: View {
         guard panel.runModal() == .OK, let url = panel.url,
               let target = SSHFileRules.joining(loadedPath, url.lastPathComponent) else { return }
         run {
-            let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            guard size <= SSHFileRules.transferLimit else { throw SSHSession.FileFailureForUI.tooLarge }
-            let data = try Data(contentsOf: url, options: .mappedIfSafe)
-            try await session.uploadFile(data, to: target)
+            try await session.uploadFile(at: url, to: target)
             await reload(); notice = "Uploaded \(url.lastPathComponent). Existing files are never overwritten."
         }
     }
@@ -136,12 +133,5 @@ struct SSHFilesPanel: View {
             try data.write(to: url, options: .atomic)
             notice = "Downloaded \(file.name)."
         }
-    }
-}
-
-private extension SSHSession {
-    enum FileFailureForUI: LocalizedError {
-        case tooLarge
-        var errorDescription: String? { "Transfers are limited to 64 MB per file." }
     }
 }
