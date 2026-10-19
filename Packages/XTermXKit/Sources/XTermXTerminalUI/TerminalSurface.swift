@@ -174,7 +174,7 @@ public final class TerminalFeed {
             if index > 0, !row.isWrapped { text += "\n" }
             text += row.text
         }
-        return text
+        return WrappedLinks.join(text, columns: snapshot.dimensions.cols)
     }
 
     #if os(iOS)
@@ -366,7 +366,8 @@ final class SelectionCopyTerminalView: TerminalView {
             guard let self, let window = self.window, event.window === window else { return event }
             let position = event.type == .scrollWheel ? event.locationInWindow : window.mouseLocationOutsideOfEventStream
             let point = self.convert(position, from: nil)
-            if self.bounds.contains(point) {
+            let inside = self.bounds.contains(point)
+            if inside {
                 if event.type == .scrollWheel {
                     self.handleScrollWheel(event)
                     return nil
@@ -383,6 +384,10 @@ final class SelectionCopyTerminalView: TerminalView {
                     // Entering a pane with Control already held must highlight too.
                     self.updateLinkPreview(with: event)
                 }
+            }
+            if inside || self.showsLinkCursor {
+                // Queued after the link preview above, once SwiftTerm has moved its underline.
+                DispatchQueue.main.async { [weak self] in self?.updateLinkCursor(inside: inside) }
             }
             return event
         }
@@ -416,6 +421,29 @@ final class SelectionCopyTerminalView: TerminalView {
         flagsChanged(with: Self.linkEvent(modifiers))
     }
 
+    private(set) var showsLinkCursor = false
+
+    /// SwiftTerm underlines the link under a Command/Control pointer but keeps the I-beam;
+    /// show the pointing hand while that underline is up.
+    func updateLinkCursor(inside: Bool, held: Bool = !NSEvent.modifierFlags.intersection([.command, .control]).isEmpty) {
+        let overLink = inside && (held || showsLinkCursor) && linkHighlighted == true
+        guard overLink != showsLinkCursor else { return }
+        showsLinkCursor = overLink
+        (overLink ? NSCursor.pointingHand : inside ? NSCursor.iBeam : NSCursor.arrow).set()
+    }
+
+    /// SwiftTerm keeps the hovered link's range internal; nil means the property is gone.
+    var linkHighlighted: Bool? {
+        var mirror: Mirror? = Mirror(reflecting: self)
+        while let current = mirror {
+            if let range = current.children.first(where: { $0.label == "linkHighlightRange" })?.value {
+                return !Mirror(reflecting: range).children.isEmpty
+            }
+            mirror = current.superclassMirror
+        }
+        return nil
+    }
+
     deinit {
         if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
     }
@@ -428,6 +456,13 @@ final class SelectionCopyTerminalView: TerminalView {
 
     override func mouseDragged(with event: NSEvent) {
         super.mouseDragged(with: Self.linkEvent(event))
+    }
+
+    /// Links that a program broke across rows with a real newline are copied whole.
+    override func copy(_ sender: Any) {
+        guard let text = getSelection() else { return super.copy(sender) }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(WrappedLinks.join(text, columns: terminalStateSnapshot().dimensions.cols), forType: .string)
     }
 
     override func mouseUp(with event: NSEvent) {

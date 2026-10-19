@@ -52,15 +52,24 @@ public struct SpawnRequest: Codable, Sendable, Hashable {
     public var initialInput: String?
     /// Start the agent with its own skip-permissions flag, this once.
     public var bypass: Bool
+    /// Reopen a past conversation by id, or "" for the agent's own session picker. Agents without one start fresh.
+    public var resume: String?
+    /// Shell for the pane, one listed in /etc/shells; nil means the person's login shell.
+    public var shell: String?
+    /// Give this agent pane its own Git worktree; nil follows the host setting.
+    public var isolate: Bool?
 
     public init(kind: PaneKind, agentID: String? = nil, cwd: String? = nil, title: String? = nil,
-                initialInput: String? = nil, bypass: Bool = false) {
+                initialInput: String? = nil, bypass: Bool = false, resume: String? = nil, shell: String? = nil, isolate: Bool? = nil) {
         self.kind = kind
         self.agentID = agentID
         self.cwd = cwd
         self.title = title
         self.initialInput = initialInput
         self.bypass = bypass
+        self.resume = resume
+        self.shell = shell
+        self.isolate = isolate
     }
 }
 

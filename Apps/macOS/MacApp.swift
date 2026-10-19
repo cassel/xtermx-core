@@ -493,6 +493,29 @@ final class AppModel {
         }
     }
 
+    /// A new tab with `requests`, in order, as a balanced grid: rows of panes, or columns when `vertical`.
+    func newGridWorkspace(_ requests: [SpawnRequest], vertical: Bool) {
+        guard let shape = gridLimits.shape(for: requests.count, vertical: vertical) else { showLayoutLimit(); return }
+        Task { @MainActor in
+            pendingLaunches += 1
+            defer { pendingLaunches -= 1 }
+            do {
+                var prepared: [PreparedPaneSpawn] = []
+                for request in requests { prepared.append(try await manager.prepareSpawn(request)) }
+                spawningLocally = true
+                defer { spawningLocally = false }
+                let ids = prepared.map { manager.spawnPrepared($0).id }
+                let byColumns = WorkspaceGrid.byColumns(shape, vertical: vertical)
+                guard let layout = SplitNode.grid(ids, lines: byColumns ? shape.columns : shape.rows, vertical: byColumns) else { return }
+                let cwd = requests[0].cwd
+                let ws = Workspace(name: cwd.map { ($0 as NSString).lastPathComponent } ?? "Workspace \(workspaces.count + 1)", layout: layout, focused: ids[0])
+                workspaces.append(ws); activeID = ws.id; composing = false; maximized = nil
+                if let cwd { rememberFolder(cwd) }
+                focus(ids[0])
+            } catch { launchError = error.localizedDescription }
+        }
+    }
+
     func showHome() {
         composing = false
         homeVisible = true

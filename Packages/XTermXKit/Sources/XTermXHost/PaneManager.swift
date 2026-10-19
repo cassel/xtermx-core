@@ -34,7 +34,7 @@ public final class PaneManager {
     @ObservationIgnored public var onWorktreeClosed: ((GitWorktreeRecord) -> Void)?
 
     public func prepareSpawn(_ request: SpawnRequest) async throws -> PreparedPaneSpawn {
-        guard isolateAgents, let agent = request.agentID, agents.contains(where: { $0.id == agent }) else { return PreparedPaneSpawn(request: request) }
+        guard request.isolate ?? isolateAgents, let agent = request.agentID, agents.contains(where: { $0.id == agent }) else { return PreparedPaneSpawn(request: request) }
         var request = request
         let record = try await worktreeStore.create(cwd: request.cwd ?? FileManager.default.homeDirectoryForCurrentUser.path, agentID: agent)
         if let record { request.cwd = record.path }
@@ -101,6 +101,15 @@ public final class PaneManager {
         return FileManager.default.isExecutableFile(atPath: "/bin/zsh") ? "/bin/zsh" : "/bin/bash"
     }
 
+    /// Shells from /etc/shells present on this machine. csh/tcsh are left out: panes start shells with `-l -i`.
+    public nonisolated static func availableShells(listing: String? = try? String(contentsOfFile: "/etc/shells", encoding: .utf8)) -> [String] {
+        var seen = Set<String>()
+        return (listing ?? "").split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter {
+            $0.hasPrefix("/") && !["csh", "tcsh"].contains(($0 as NSString).lastPathComponent)
+                && FileManager.default.isExecutableFile(atPath: $0) && seen.insert($0).inserted
+        }
+    }
+
     @discardableResult
     public func spawn(_ request: SpawnRequest, parentID: String? = nil, openedByAgent: Bool = false,
                       id: String = UUID().uuidString) -> PaneInfo {
@@ -116,13 +125,15 @@ public final class PaneManager {
         tokenOfPane[info.id] = token
 
         // An agent pane is a shell that starts the agent, then an optional first message.
+        // A resumed conversation takes no new prompt: the picker would read it as a search.
+        let resume = agent.flatMap { a in request.resume.flatMap { AgentCatalog.resumeArguments(agentID: a.id, session: $0) } }
         var firstInput = agent.map { a in
-            var parts = [a.command]
+            var parts = [a.command] + (resume ?? [])
             if request.bypass, let flag = a.bypassFlag { parts.append(flag) }
             parts += toolArguments(for: a, paneID: info.id, token: token, beforePrompt: true)
             return parts.joined(separator: " ")
         }
-        if let extra = request.initialInput, !extra.isEmpty {
+        if let extra = request.initialInput, !extra.isEmpty, resume == nil {
             firstInput = firstInput.map { "\($0) \(Self.shellQuote(extra))" } ?? extra
         }
         if let a = agent {
@@ -130,7 +141,8 @@ public final class PaneManager {
             if !trailing.isEmpty { firstInput = ([firstInput ?? a.command] + trailing).joined(separator: " ") }
         }
 
-        let session = PaneSession(info: info, shell: shell, environment: environment(for: info, token: token), initialInput: firstInput)
+        let paneShell = request.shell.flatMap { Self.availableShells().contains($0) ? $0 : nil } ?? shell
+        let session = PaneSession(info: info, shell: paneShell, environment: environment(for: info, token: token), initialInput: firstInput)
         session.onOutput = { [weak self] data in self?.emit(.output(paneID: info.id, data: data)) }
         session.onChange = { [weak self] updated in self?.update(updated) }
         sessions[info.id] = session
@@ -361,6 +373,9 @@ public final class PaneManager {
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         env["TERM_PROGRAM"] = "XTermX"
+        // Node CLIs (Claude Code included) only emit OSC 8 links for terminals they recognize;
+        // those stay clickable as one link even when the program breaks them across rows.
+        env["FORCE_HYPERLINK"] = env["FORCE_HYPERLINK"] ?? "1"
         env["XTERMX_PANE_ID"] = info.id
         env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
         env["PATH"] = ([loginPath] + AgentCatalog.extraDirectories()).joined(separator: ":")
@@ -509,6 +524,20 @@ public enum AgentCatalog {
             FileManager.default.isExecutableFile(atPath: "\(dir)/\(executable)")
         }
     }
+
+    /// Arguments after the agent's command that reopen conversation `session`, or open the agent's
+    /// own picker when `session` is empty. nil for agents without a resume command or a malformed id.
+    public static func resumeArguments(agentID: String, session: String) -> [String]? {
+        guard session.count <= 128, session.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else { return nil }
+        let id = session.isEmpty ? [] : [session]
+        switch agentID {
+        case "claude-code", "openclaude": return ["--resume"] + id
+        case "codex": return ["resume"] + id
+        default: return nil
+        }
+    }
+
+    public static func canResume(_ agentID: String) -> Bool { resumeArguments(agentID: agentID, session: "") != nil }
 
     /// Installed agents first, keeping catalog order within each group.
     public static func sorted(_ agents: [AgentDescriptor]) -> [AgentDescriptor] {

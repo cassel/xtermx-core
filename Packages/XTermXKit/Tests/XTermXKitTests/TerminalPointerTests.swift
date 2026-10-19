@@ -118,6 +118,24 @@ import Testing
         #expect(delegate.links.count == 1)
     }
 
+    @Test func commandHoverOverALinkShowsThePointingHand() {
+        let view = SelectionCopyTerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 500))
+        view.feed(text: "https://example.com/path?q=1")
+        #expect(view.linkHighlighted == false)
+        func modifiers(_ flags: NSEvent.ModifierFlags) -> NSEvent {
+            NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
+                             context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 55)!
+        }
+        view.flagsChanged(with: modifiers(.command))
+        view.mouseMoved(with: event(.mouseMoved, flags: .command))
+        #expect(view.linkHighlighted == true)
+        view.updateLinkCursor(inside: true, held: true)
+        #expect(view.showsLinkCursor)
+        view.flagsChanged(with: modifiers([]))
+        view.updateLinkCursor(inside: true, held: false)
+        #expect(!view.showsLinkCursor)
+    }
+
     @Test func browserLinksRejectLocalFilesAndExecutableSchemes() {
         #expect(SelectionCopyTerminalView.browserURL("https://example.com/path")?.host == "example.com")
         #expect(SelectionCopyTerminalView.browserURL("http://localhost:3000")?.port == 3000)

@@ -28,6 +28,20 @@ public indirect enum SplitNode: Hashable, Codable, Sendable {
         }
     }
 
+    /// `ids` in reading order as `lines` balanced lines (earlier lines take the extra pane). Each line's
+    /// panes sit side by side, lines stacked; `vertical` stacks each line instead and sets lines side by side.
+    public static func grid(_ ids: [String], lines: Int, vertical: Bool) -> SplitNode? {
+        guard !ids.isEmpty else { return nil }
+        let count = min(max(1, lines), ids.count)
+        var groups: [[String]] = [], start = 0
+        for i in 0..<count {
+            let size = ids.count / count + (i < ids.count % count ? 1 : 0)
+            groups.append(Array(ids[start..<start + size])); start += size
+        }
+        let line = { (g: [String]) -> SplitNode in g.count == 1 ? .leaf(g[0]) : .split(vertical: vertical, g.map(SplitNode.leaf)) }
+        return groups.count == 1 ? line(groups[0]) : .split(vertical: !vertical, groups.map(line))
+    }
+
     /// Puts `new` after `target`, in a split of the given direction.
     public func inserting(_ new: String, after target: String, vertical: Bool) -> SplitNode {
         switch self {
