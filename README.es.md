@@ -68,7 +68,7 @@ Las cuentas, suscripciones e instalaciones de las CLIs son tuyas. XTermX no incl
 
 ## Compilar y ejecutar
 
-[Descargar la compilación de desarrollo para Mac](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.17-1950) — universal Apple Silicon + Intel, macOS 15+. Tiene firma ad-hoc y **no está notarizada por Apple**; macOS puede bloquear la primera apertura. Las instrucciones para compilar siguen abajo. No incluye las apps propietarias de iOS/Watch.
+[Descargar la compilación de desarrollo para Mac](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.19-0910) — universal Apple Silicon + Intel, macOS 15+. Tiene firma ad-hoc y **no está notarizada por Apple**; macOS puede bloquear la primera apertura. Las instrucciones para compilar siguen abajo. No incluye las apps propietarias de iOS/Watch.
 
 ### Mac
 

@@ -68,7 +68,7 @@ Mac 还内置 SSH 客户端、主机密钥信任检查、SFTP 文件浏览器和
 
 ## 构建与运行
 
-[下载 Mac 开发版本](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.17-1950)：支持 Apple Silicon 和 Intel，要求 macOS 15 或更高版本。此构建采用 ad-hoc 签名，**未经 Apple 公证**；macOS 可能阻止首次打开。下方保留源码构建说明。下载不包含专有的 iOS/Watch 应用。
+[下载 Mac 开发版本](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.19-0910)：支持 Apple Silicon 和 Intel，要求 macOS 15 或更高版本。此构建采用 ad-hoc 签名，**未经 Apple 公证**；macOS 可能阻止首次打开。下方保留源码构建说明。下载不包含专有的 iOS/Watch 应用。
 
 ### Mac
 
