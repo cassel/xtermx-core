@@ -68,7 +68,7 @@ Agent accounts, subscriptions and CLI installations are yours. XTermX does not i
 
 ## Build and run
 
-[Download the Mac development build](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.19-1300) — universal Apple Silicon + Intel, macOS 15+. It is ad-hoc signed and **not notarized by Apple**; macOS may block first launch. Source-build instructions follow. The proprietary iOS/Watch apps are not included.
+[Download the Mac development build](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.21-0925) — universal Apple Silicon + Intel, macOS 15+. It is ad-hoc signed and **not notarized by Apple**; macOS may block first launch. Source-build instructions follow. The proprietary iOS/Watch apps are not included.
 
 ### Mac
 
