@@ -27,6 +27,7 @@ public final class PaneSession {
         screenDelegate.onTitle = { [weak self] title in self?.titleChanged(title) }
         self.process = LocalProcess(delegate: self, dispatchQueue: .main)
 
+        Self.closeInheritedDescriptors()
         // A login, interactive shell: agents get the person's PATH and dotfiles, and when an
         // agent quits the pane falls back to a prompt instead of closing.
         process.startProcess(executable: shell, args: ["-l", "-i"], environment: environment,
@@ -57,6 +58,16 @@ public final class PaneSession {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.write(Data([0x0d])) }
     }
 
+    /// Sockets the app holds (the remote-access listeners, open connections) would otherwise pass to every
+    /// shell, which then keeps the port busy after remote access is turned off and on again.
+    private static func closeInheritedDescriptors() {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd") else { return }
+        for fd in names.compactMap(Int32.init) where fd > 2 {
+            let flags = fcntl(fd, F_GETFD)
+            if flags >= 0, flags & FD_CLOEXEC == 0 { _ = fcntl(fd, F_SETFD, flags | FD_CLOEXEC) }
+        }
+    }
+
     public func resize(cols: Int, rows: Int) {
         guard cols > 4, rows > 2, cols != info.cols || rows != info.rows else { return }
         info.cols = cols
@@ -65,6 +76,14 @@ public final class PaneSession {
         var size = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
         _ = PseudoTerminalHelpers.setWinSize(masterPtyDescriptor: process.childfd, windowSize: &size)
         onChange?(info)
+    }
+
+    /// Asks the program in front to draw again at the current size: a view that just appeared may hold
+    /// nothing, and the kernel only signals a size change when the size actually changed.
+    public func redraw() {
+        guard info.state != .exited else { return }
+        let group = tcgetpgrp(process.childfd)
+        if group > 0 { kill(-group, SIGWINCH) }
     }
 
     /// An agent's one-liner for the phone and Watch.

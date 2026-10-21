@@ -242,6 +242,11 @@ public final class PaneManager {
         logSize(id, "home \(cols)x\(rows)")
     }
 
+    /// A view of the pane appeared on this machine: the program draws again for it, unless a device holds it.
+    public func redraw(_ id: String) {
+        if borrowers[id]?.isEmpty ?? true { sessions[id]?.redraw() }
+    }
+
     /// A device's size for the pane while it watches; `device` nil for one that never says when it leaves.
     public func resize(_ id: String, cols: Int, rows: Int, device: UUID?) {
         if let device { borrowers[id, default: []].insert(device) }

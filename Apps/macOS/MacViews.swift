@@ -584,6 +584,7 @@ final class PaneFeedBinder {
                 remote.connection.detach(paneID: remote.pane, token: remote.token)
             } else if let session = model.manager.session(paneID) {
                 self.feed.receive(session.snapshot())
+                model.manager.redraw(paneID)
             }
         }
         if let leaf = model.remoteLeaves[paneID], let connection = model.machines.connection(leaf.machine) {
@@ -631,6 +632,12 @@ final class PaneFeedBinder {
             // The window or the splits changed: a phone using the pane keeps it until it leaves.
             model?.manager.setHomeSize(paneID, cols: cols, rows: rows)
         }
+        // A layout that settled before onResize was set never reached the terminal.
+        if let natural = feed.size, natural.cols != size?.cols || natural.rows != size?.rows {
+            size = natural
+            model.manager.setHomeSize(paneID, cols: natural.cols, rows: natural.rows)
+        }
+        model.manager.redraw(paneID)
         listener = model.manager.addListener { [weak self, weak model] event in
             guard let self, let model else { return }
             switch event {
