@@ -51,7 +51,7 @@ O código dos aplicativos iOS e Watch e seus materiais de assinatura **não faze
 
 ## Compilar o Mac
 
-[Baixar a versão de desenvolvimento para Mac](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.17) — universal Apple Silicon + Intel, macOS 15+. Possui assinatura ad-hoc e **não é notarizada pela Apple**; o macOS pode impedir a primeira abertura. O download não inclui os apps proprietários de iOS/Watch.
+[Baixar a versão de desenvolvimento para Mac](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.22-1458) — universal Apple Silicon + Intel, macOS 15+. Possui assinatura ad-hoc e **não é notarizada pela Apple**; o macOS pode impedir a primeira abertura. O download não inclui os apps proprietários de iOS/Watch.
 
 Para compilar: **macOS 15+**, **Xcode 26+** e **XcodeGen**.
 
@@ -93,7 +93,7 @@ Abra o globo no Mac ou pressione **⌘⇧G**, habilite o acesso remoto e use o Q
 - Dispositivos já conectados permanecem no histórico como offline após desconectar.
 - Cada pane pode ser compartilhado para controle, somente leitura ou marcado como privado.
 - O host controla criação remota de terminais, Control Rooms e recebimento de arquivos.
-- Receber arquivos exige habilitação. O protocolo de anexos aceita até 64 MB por arquivo; hosts antigos têm um caminho legado menor.
+- Receber arquivos exige habilitação. O host define o limite de anexos em Ajustes → Acesso remoto (500 MB por arquivo por padrão), com cota total de armazenamento opcional. Alterações chegam imediatamente aos dispositivos pareados. Envios antigos por Salas e arquivos continuam limitados a 4 MB.
 - **Forget all devices** troca o segredo e exige novo pareamento.
 
 Os frames usam ChaCha20-Poly1305 com autenticação, nonces de conexão e contadores contra replay. Portas: **47820** (WebSocket) e **47821** (transporte HTTP compatível com Watch); Bonjour `_xtermx._tcp`.

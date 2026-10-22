@@ -1,4 +1,5 @@
 import AppKit
+import Network
 import Observation
 import SwiftUI
 import UserNotifications
@@ -30,6 +31,13 @@ struct XTermXMacApp: App {
                 .environment(\.appTheme, AppTheme.preset(themeID))
                 .frame(minWidth: 720, minHeight: 420)
                 .preferredColorScheme(.dark)
+                .task { await MacUpdateController.shared.checkAutomatically() }
+                .onReceive(Timer.publish(every: 3600, on: .main, in: .common).autoconnect()) { _ in
+                    Task { await MacUpdateController.shared.checkAutomatically() }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    Task { await MacUpdateController.shared.checkAutomatically() }
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 800)
@@ -81,6 +89,7 @@ enum RightTab: String, CaseIterable, Identifiable {
     case controlRoom = "Control Room"
     case agents = "Agents"
     case devices = "Devices"
+    case network = "Network"
     var id: String { rawValue }
 }
 
@@ -183,6 +192,9 @@ final class AppModel {
 
     /// Mac, Telegram and Slack notices when an agent is done or needs you (Settings › Notifications).
     let notifier = AgentNotifier()
+    let clipboard = MacClipboardBridge()
+    /// Tells paired devices this Mac's new addresses when its network changes.
+    @ObservationIgnored private let pathMonitor = NWPathMonitor()
     /// Tokens and API-price cost of every agent session on this Mac (title bar meters, the Usage popover).
     let meter = UsageMeterModel()
     let remoteAwake = RemoteAwakeController()
@@ -212,6 +224,16 @@ final class AppModel {
     let appMemory = AppMemoryMeter()
     let dictation = PaneDictationController()
     let receivedCleanup = ReceivedCleanupController()
+    var receivedFileLimits: ReceivedFileLimits = {
+        if let data = UserDefaults.standard.data(forKey: "xtermx.received.limits"),
+           let value = try? JSONDecoder().decode(ReceivedFileLimits.self, from: data), value.isValid { return value }
+        return ReceivedFileLimits()
+    }() {
+        didSet {
+            server.updateReceivedFileLimits(receivedFileLimits)
+            if let data = try? JSONEncoder().encode(receivedFileLimits) { UserDefaults.standard.set(data, forKey: "xtermx.received.limits") }
+        }
+    }
     /// Set while this window spawns panes itself, so `place` leaves them to the caller.
     @ObservationIgnored var spawningLocally = false
 
@@ -222,6 +244,8 @@ final class AppModel {
            let history = try? JSONDecoder().decode(DeviceHistory.self, from: data) { deviceHistory = history }
         manager.isolateAgents = UserDefaults.standard.bool(forKey: "xtermx.agents.isolate")
         server = RemoteServer(manager: manager)
+        server.devServers.start()
+        server.services.start()
         tools = MCPServer(manager: manager, agentHistory: FileSecretStore.defaultDirectory.appendingPathComponent("agent-history.json"),
                           watchMachine: true)
         server.onDeviceVerified = { [weak self] device in
@@ -255,6 +279,7 @@ final class AppModel {
         if UserDefaults.standard.object(forKey: "xtermx.remote.enabled") as? Bool ?? true { server.start() }
         remoteAwake.start(server: server)
         appMemory.start(manager: manager)
+        server.updateReceivedFileLimits(receivedFileLimits)
         receivedCleanup.start(store: server.receivedFiles)
         dictation.target = { [weak self] in
             guard let self, let id = focusedPane, let pane = pane(id), pane.state != .exited else { return nil }
@@ -287,10 +312,21 @@ final class AppModel {
         // The hooks call a fixed path; keep it pointing at this copy of the app.
         if let executable = Bundle.main.executablePath { try? AgentHookInstaller.writeLauncher(executable: executable) }
         agentHooksInstalled = AgentHookInstaller.isInstalled
+        // Hooks added in a newer version reach accounts that already had them on.
+        if agentHooksInstalled {
+            let manageLine = UserDefaults.standard.object(forKey: "xtermx.claude.status-line") as? Bool ?? true
+            _ = try? AgentHookInstaller.install(manageStatusLine: manageLine)
+        }
         meter.start()
         // Permission is asked when the person turns Mac notifications on, not at launch.
         notifier.hostName = manager.hostName
         notifier.onOpen = { [weak self] pane in self?.focus(pane) }
+        clipboard.start(server: server)
+        pathMonitor.pathUpdateHandler = { [weak self] _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.server.announceAddresses() } }
+        }
+        pathMonitor.start(queue: .global(qos: .utility))
+        server.services.onDown = { [weak self] status in self?.notifier.post(AgentNoticeText.serviceDown(status)) }
         notifier.isOnScreen = { [weak self] pane in
             guard let self, let pane else { return false }
             return NSApp.isActive && self.focusedPane == pane
@@ -471,6 +507,29 @@ final class AppModel {
                 let ws = Workspace(name: name, layout: layout, focused: first.id)
                 workspaces.append(ws); activeID = ws.id; composing = false
                 if let cwd = request.cwd { rememberFolder(cwd) }
+            } catch { launchError = error.localizedDescription }
+        }
+    }
+
+    /// A new tab with `requests`, in order, as a balanced grid: rows of panes, or columns when `vertical`.
+    func newGridWorkspace(_ requests: [SpawnRequest], vertical: Bool) {
+        guard let shape = gridLimits.shape(for: requests.count, vertical: vertical) else { showLayoutLimit(); return }
+        Task { @MainActor in
+            pendingLaunches += 1
+            defer { pendingLaunches -= 1 }
+            do {
+                var prepared: [PreparedPaneSpawn] = []
+                for request in requests { prepared.append(try await manager.prepareSpawn(request)) }
+                spawningLocally = true
+                defer { spawningLocally = false }
+                let ids = prepared.map { manager.spawnPrepared($0).id }
+                let byColumns = WorkspaceGrid.byColumns(shape, vertical: vertical)
+                guard let layout = SplitNode.grid(ids, lines: byColumns ? shape.columns : shape.rows, vertical: byColumns) else { return }
+                let cwd = requests[0].cwd
+                let ws = Workspace(name: cwd.map { ($0 as NSString).lastPathComponent } ?? "Workspace \(workspaces.count + 1)", layout: layout, focused: ids[0])
+                workspaces.append(ws); activeID = ws.id; composing = false; maximized = nil
+                if let cwd { rememberFolder(cwd) }
+                focus(ids[0])
             } catch { launchError = error.localizedDescription }
         }
     }
@@ -819,6 +878,11 @@ struct AppCommands: Commands {
     @Environment(\.openSettings) private var openSettings
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button((InterfaceLanguage(rawValue: language) ?? .system).text("Check for updates…")) {
+                Task { await MacUpdateController.shared.check(manual: true) }
+            }.disabled(MacUpdateController.shared.checking)
+        }
         CommandGroup(replacing: .newItem) {
             Button((InterfaceLanguage(rawValue: language) ?? .system).text("New Workspace Tab")) { model.composing = true }.appShortcut(.newWorkspace, preferences: bindings)
             Button((InterfaceLanguage(rawValue: language) ?? .system).text("Saved Layouts…")) { openWindow(id: "layouts") }

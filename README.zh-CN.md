@@ -68,7 +68,7 @@ Mac 还内置 SSH 客户端、主机密钥信任检查、SFTP 文件浏览器和
 
 ## 构建与运行
 
-[下载 Mac 开发版本](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.17)：支持 Apple Silicon 和 Intel，要求 macOS 15 或更高版本。此构建采用 ad-hoc 签名，**未经 Apple 公证**；macOS 可能阻止首次打开。下方保留源码构建说明。下载不包含专有的 iOS/Watch 应用。
+[下载 Mac 开发版本](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.22-1458)：支持 Apple Silicon 和 Intel，要求 macOS 15 或更高版本。此构建采用 ad-hoc 签名，**未经 Apple 公证**；macOS 可能阻止首次打开。下方保留源码构建说明。下载不包含专有的 iOS/Watch 应用。
 
 ### Mac
 
@@ -120,7 +120,7 @@ swift build -c release --product xtermx
 - 已配对设备断开后仍会保留在历史中；显示离线不代表存在活动连接。
 - 面板可以设为 **View & control**、**View only** 或 **Private**。
 - 远程创建终端、接收文件和 Control Room 权限均由主机控制。
-- 接收文件需要主动启用。终端附件协议支持单文件最大 64 MB；旧主机的兼容传输方式限制更小。
+- 接收文件需要主动启用。主机可在“设置 → 远程访问”中设置附件大小限制（默认为每个文件 500 MB），并可选择设置总存储配额。更改会立即传达至已配对设备。旧版“房间与文件”上传仍限制为 4 MB。
 - **Forget all devices** 会轮换配对密钥，所有设备都需重新配对。
 
 终端帧使用 ChaCha20-Poly1305 认证加密、每次连接的新 nonce 及防重放计数器。WebSocket 端口为 **47820**，兼容 Watch 的 HTTP 传输端口为 **47821**；Bonjour 广播 `_xtermx._tcp`。能否连接取决于你的局域网、VPN 和防火墙配置。不要假设 `.local` 名称可在局域网之外使用。

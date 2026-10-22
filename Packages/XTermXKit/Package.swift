@@ -50,6 +50,7 @@ let package = Package(
                 "XTermXKit",
                 .product(name: "SwiftTerm", package: "SwiftTerm", condition: .when(platforms: [.macOS, .iOS])),
                 .product(name: "Citadel", package: "Citadel", condition: .when(platforms: [.macOS, .iOS])),
+                .product(name: "NIOPosix", package: "swift-nio", condition: .when(platforms: [.macOS, .iOS])),
             ],
             // Citadel/NIO SSH types are not Sendable yet.
             swiftSettings: [.swiftLanguageMode(.v5)]

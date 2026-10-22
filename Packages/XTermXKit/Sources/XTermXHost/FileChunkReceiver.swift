@@ -27,9 +27,14 @@ import XTermXKit
         func rejected(_ message: String) -> FileTransferReply { .failed(id: request.id, message: message) }
         switch request {
         case .begin(let id, let name, let bytes):
-            guard pending[id] == nil, RemoteFileRules.validName(name), (0...RemoteFileRules.maximumTransferBytes).contains(bytes) else { return rejected("Choose a regular file up to 64 MB with a plain filename.") }
-            guard pending.count < 4, pending.values.filter({ $0.owner == owner }).count < 2,
-                  pending.values.reduce(0, { $0 + $1.expected }) + bytes <= RemoteFileRules.maximumStoredBytes else { return rejected("Another transfer is in progress. Wait or cancel it first.") }
+            guard pending[id] == nil, RemoteFileRules.validName(name), bytes >= 0 else { return rejected("Choose a regular file with a plain filename.") }
+            guard bytes <= store.limits.maximumFileBytes else { return rejected(ReceivedFileStore.Failure.tooLarge(store.limits.maximumFileBytes).localizedDescription) }
+            guard pending.count < 4, pending.values.filter({ $0.owner == owner }).count < 2 else { return rejected("Another transfer is in progress. Wait or cancel it first.") }
+            let reserved = pending.values.reduce(0) { total, item in
+                let (sum, overflow) = total.addingReportingOverflow(item.expected)
+                return overflow ? Int.max : sum
+            }
+            try store.checkCapacity(bytes: bytes, reserved: reserved)
             let directory = store.directory.appendingPathComponent(".incoming", isDirectory: true)
             for path in [store.directory, directory] {
                 guard (try? path.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else { return rejected("The received-files path cannot be a symbolic link.") }

@@ -14,6 +14,12 @@ public enum AgentNoticeEvent: String, Codable, Sendable, CaseIterable {
     case needsYou
     /// A plan is nearly used up (posted by the plan meters).
     case planLimit
+    /// A command (a pane that isn't an agent) ran a while and exited with a code other than 0.
+    case commandFailed
+    /// A command ran a while and exited cleanly: a build, a test run, a long copy.
+    case buildFinished
+    /// A service the Mac checks stopped answering (Settings › Services).
+    case serviceDown
 }
 
 /// One notice, ready for any channel.
@@ -92,6 +98,26 @@ public enum AgentNoticeText {
         AgentNotice(event: .planLimit, paneID: nil, title: "\(tool.name) plan at \(percent)%", body: detail)
     }
 
+    /// A pane's command ended after running `ran` seconds; an `exitCode` other than 0 is a failure.
+    public static func commandEnded(_ pane: PaneInfo, exitCode: Int32?, ran: TimeInterval) -> AgentNotice {
+        let title = pane.displayTitle.trimmingCharacters(in: .whitespaces)
+        let name = title.isEmpty ? "A command" : title
+        let failed = (exitCode ?? 0) != 0
+        let last = clip(140)(pane.lastLine)
+        let body = [last.isEmpty ? nil : last, "\(tildePath(pane.cwd)) · ran \(duration(ran))"].compactMap { $0 }
+        return AgentNotice(event: failed ? .commandFailed : .buildFinished, paneID: pane.id,
+                           title: failed ? "\(name) failed · exit \(exitCode ?? 0)" : "\(name) finished",
+                           body: body.joined(separator: "\n"))
+    }
+
+    /// A checked service stopped answering. Names and errors can come from anywhere, so control characters go.
+    public static func serviceDown(_ status: ServiceStatus) -> AgentNotice {
+        let name = ServiceRules.clean(status.name)
+        let body = [status.lastError.map { clip(140)(ServiceRules.clean($0)) }, ServiceRules.clean(status.address)]
+            .compactMap { $0 }.filter { !$0.isEmpty }
+        return AgentNotice(event: .serviceDown, paneID: nil, title: "\(name) is down", body: body.joined(separator: "\n"))
+    }
+
     /// What "Send test" sends.
     public static func test(from host: String) -> AgentNotice {
         AgentNotice(event: .finished, paneID: nil, title: "XTermX is connected",
@@ -124,25 +150,47 @@ public enum AgentNoticeText {
 /// least `minimumWork` seconds. *Needs you*: the pane is blocked, the agent said it needs the person, its
 /// session waits, or an approval card appears. A pane that asks without a card is held for `grace`
 /// seconds, because the card that usually follows says what is asked; `due(now:)` releases it.
+/// *Command failed / build finished*: in a pane that isn't an agent, a command the shell marked (OSC 133)
+/// ran `commandMinimum` seconds or more; a code other than 0 is a failure. A pane whose shell itself
+/// exits with an error after that long is a failure too; a clean exit is just the person closing it.
 public struct AgentNoticeWatcher: Sendable {
     public var minimumWork: TimeInterval
     public var grace: TimeInterval
+    public var commandMinimum: TimeInterval
+    /// Panes whose exit was already told.
+    private var toldExit: Set<String> = []
+    /// The end of the last command looked at, per pane.
+    private var lastRun: [String: Date] = [:]
     private var workingSince: [String: Date] = [:]
     /// Panes whose current wait was already told (or is held).
     private var asking: Set<String> = []
     private var held: [String: (notice: AgentNotice, due: Date)] = [:]
     private var seenCards: Set<String> = []
 
-    public init(minimumWork: TimeInterval = 10, grace: TimeInterval = 1.5) {
+    public init(minimumWork: TimeInterval = 10, grace: TimeInterval = 1.5, commandMinimum: TimeInterval = 30) {
         self.minimumWork = minimumWork
         self.grace = grace
+        self.commandMinimum = commandMinimum
     }
 
     /// Notices due at once for a pane update. `agentName` is the catalog name for agents without a session.
     public mutating func paneUpdated(_ pane: PaneInfo, agentName: String? = nil, now: Date = .now) -> [AgentNotice] {
         let id = pane.id
-        if pane.state == .exited { forget(id); return [] }
+        if pane.state == .exited {
+            clear(id)
+            guard pane.kind != .agent, let code = pane.exitCode, code != 0, !toldExit.contains(id) else { return [] }
+            let ran = now.timeIntervalSince(pane.createdAt)
+            guard ran >= commandMinimum else { return [] }
+            toldExit.insert(id)
+            return [AgentNoticeText.commandEnded(pane, exitCode: code, ran: ran)]
+        }
         var out: [AgentNotice] = []
+        if pane.kind != .agent, let run = pane.lastCommand, lastRun[id] != run.endedAt {
+            lastRun[id] = run.endedAt
+            if run.duration >= commandMinimum {
+                out.append(AgentNoticeText.commandEnded(pane, exitCode: run.exitCode, ran: run.duration))
+            }
+        }
         let agent = AgentNoticeText.agent(pane, fallback: agentName)
 
         switch pane.agentSession?.status {
@@ -198,10 +246,89 @@ public struct AgentNoticeWatcher: Sendable {
     public var nextDue: Date? { held.values.map(\.due).min() }
 
     public mutating func forget(_ paneID: String) {
+        clear(paneID)
+        toldExit.remove(paneID)
+        lastRun[paneID] = nil
+    }
+
+    private mutating func clear(_ paneID: String) {
         workingSince[paneID] = nil
         asking.remove(paneID)
         held[paneID] = nil
     }
+}
+
+/// Reads a shell's semantic prompt marks (OSC 133): `C` when a command starts, `D;<code>` when it ends.
+/// A `D` without a `C` before it is a prompt drawn again, not a command.
+public struct SemanticPromptTracker: Sendable {
+    private var started: Date?
+
+    public init() {}
+
+    /// The command that just ended, if this mark ends one. `payload` is what follows `133;`.
+    public mutating func handle(_ payload: String, now: Date = .now) -> CommandRun? {
+        let parts = payload.split(separator: ";", omittingEmptySubsequences: false)
+        switch parts.first {
+        case "C":
+            started = now
+            return nil
+        case "D":
+            guard let since = started else { return nil }
+            started = nil
+            let code = parts.count > 1 ? Int32(parts[1]) : nil
+            return CommandRun(exitCode: code, startedAt: since, endedAt: now)
+        default:
+            return nil
+        }
+    }
+}
+
+// MARK: - Which channel gets which event
+
+/// Which kinds of notice go to which channel. Channels are named by id ("mac", "telegram", …).
+/// Only the person's own choices are kept; the rest follow the defaults: everything on, except that
+/// the command events (newer and noisier) start off on channels that leave this Mac.
+public struct NoticeMatrix: Sendable, Equatable {
+    /// "channel.event" → on.
+    public private(set) var choices: [String: Bool]
+
+    public static let localChannels: Set<String> = ["mac"]
+    /// Events that start off outside the Mac.
+    public static let quietOutside: Set<AgentNoticeEvent> = [.commandFailed, .buildFinished, .serviceDown]
+
+    public init(choices: [String: Bool] = [:]) {
+        self.choices = choices
+    }
+
+    /// From the E4.4 list of "channel.event" pairs turned off, where everything else was on.
+    public static func migrating(muted: [String]) -> NoticeMatrix {
+        var m = NoticeMatrix()
+        for pair in muted {
+            let parts = pair.split(separator: ".", maxSplits: 1).map(String.init)
+            guard parts.count == 2, let event = AgentNoticeEvent(rawValue: parts[1]) else { continue }
+            m.set(parts[0], event, false)
+        }
+        return m
+    }
+
+    public static func isOnByDefault(_ channel: String, _ event: AgentNoticeEvent) -> Bool {
+        localChannels.contains(channel) || !quietOutside.contains(event)
+    }
+
+    public func wants(_ channel: String, _ event: AgentNoticeEvent) -> Bool {
+        choices[Self.key(channel, event)] ?? Self.isOnByDefault(channel, event)
+    }
+
+    public mutating func set(_ channel: String, _ event: AgentNoticeEvent, _ on: Bool) {
+        choices[Self.key(channel, event)] = on
+    }
+
+    /// The channels, in the order given, that take this event.
+    public func channels(for event: AgentNoticeEvent, among channels: [String]) -> [String] {
+        channels.filter { wants($0, event) }
+    }
+
+    static func key(_ channel: String, _ event: AgentNoticeEvent) -> String { "\(channel).\(event.rawValue)" }
 }
 
 // MARK: - Channels
@@ -209,6 +336,9 @@ public struct AgentNoticeWatcher: Sendable {
 public enum NoticeChannelError: Error, Equatable, LocalizedError {
     case badToken
     case badWebhook
+    case badAddress
+    case badHeader
+    case badTopic
     case noMessages
     /// The service answered with an error, in its words.
     case rejected(String)
@@ -219,6 +349,9 @@ public enum NoticeChannelError: Error, Equatable, LocalizedError {
         switch self {
         case .badToken: "That doesn't look like a bot token. It has digits, a colon, then letters."
         case .badWebhook: "That isn't a webhook address. It starts with https://hooks.slack.com/."
+        case .badAddress: "That isn't a web address. It starts with https:// or http://."
+        case .badTopic: "A topic is letters, digits, - and _, with no spaces."
+        case .badHeader: "A header is a name, a colon, then its value, e.g. Authorization: Bearer abc."
         case .noMessages: "No messages yet. Send your bot any message in Telegram, then try again."
         case .rejected(let why): why
         case .network(let why): why
@@ -360,6 +493,115 @@ public struct SlackWebhook: Sendable {
     }
 }
 
+/// Any web address that takes a POST, e.g. Home Assistant, n8n, Zapier or a server of your own.
+/// The address and the optional header (often a key) are secrets: neither is ever logged.
+public struct GenericWebhook: Sendable {
+    public struct Header: Sendable, Hashable {
+        public var name: String
+        public var value: String
+    }
+
+    public let url: URL
+    public let header: Header?
+
+    /// nil unless `address` is an http(s) URL and `header`, when there is one, reads "Name: value".
+    public init?(_ address: String, header: String? = nil) {
+        guard let url = URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme == "https" || url.scheme == "http", url.host?.isEmpty == false else { return nil }
+        self.url = url
+        let line = header?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if line.isEmpty {
+            self.header = nil
+        } else {
+            guard let colon = line.firstIndex(of: ":") else { return nil }
+            let name = line[..<colon].trimmingCharacters(in: .whitespaces)
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            guard !value.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) else { return nil }
+            guard !name.isEmpty, name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") })
+            else { return nil }
+            self.header = Header(name: name, value: value)
+        }
+    }
+
+    /// `{"event","title","body","paneID","host","time"}`; `paneID` is null for notices about no pane.
+    public func post(_ notice: AgentNotice, host: String, time: Date = .now) -> URLRequest {
+        var r = URLRequest(url: url, timeoutInterval: 10)
+        r.httpMethod = "POST"
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let header { r.setValue(header.value, forHTTPHeaderField: header.name) }
+        let body: [String: Any] = [
+            "event": notice.event.rawValue, "title": notice.title, "body": notice.body,
+            "paneID": notice.paneID ?? NSNull(), "host": host, "time": ISO8601DateFormatter().string(from: time),
+        ]
+        r.httpBody = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        return r
+    }
+}
+
+/// A topic on an ntfy server (ntfy.sh unless the person runs their own). Anyone who knows a public
+/// topic can read it, so the topic and the optional access token are kept as secrets.
+public struct NtfyTopic: Sendable {
+    public static let defaultServer = "https://ntfy.sh"
+    public let url: URL
+    public let token: String?
+
+    /// nil when the topic has characters ntfy won't take or the server isn't a web address.
+    /// An empty server means ntfy.sh; a bare host gets https://.
+    public init?(server: String, topic: String, token: String? = nil) {
+        var base = server.trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.isEmpty { base = Self.defaultServer }
+        if !base.contains("://") { base = "https://" + base }
+        while base.hasSuffix("/") { base.removeLast() }
+        let name = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...64).contains(name.count),
+              name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }),
+              let url = URL(string: base + "/" + name), url.scheme == "https" || url.scheme == "http",
+              url.host?.isEmpty == false else { return nil }
+        self.url = url
+        let t = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.token = t.isEmpty ? nil : t
+    }
+
+    /// The body is the message; `Title`, `Priority` and `Tags` (emoji names) ride in headers.
+    public func post(_ notice: AgentNotice) -> URLRequest {
+        var r = URLRequest(url: url, timeoutInterval: 10)
+        r.httpMethod = "POST"
+        r.setValue(Self.header(notice.title), forHTTPHeaderField: "Title")
+        r.setValue(Self.priority(notice.event), forHTTPHeaderField: "Priority")
+        r.setValue(Self.tag(notice.event), forHTTPHeaderField: "Tags")
+        if let token { r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        r.httpBody = Data((notice.body.isEmpty ? notice.title : notice.body).utf8)
+        return r
+    }
+
+    /// Things that wait on the person or broke ring louder.
+    static func priority(_ event: AgentNoticeEvent) -> String {
+        switch event {
+        case .needsYou, .commandFailed, .serviceDown: "high"
+        case .finished, .planLimit, .buildFinished: "default"
+        }
+    }
+
+    static func tag(_ event: AgentNoticeEvent) -> String {
+        switch event {
+        case .finished: "white_check_mark"
+        case .needsYou: "raising_hand"
+        case .planLimit: "warning"
+        case .commandFailed: "x"
+        case .buildFinished: "hammer"
+        case .serviceDown: "rotating_light"
+        }
+    }
+
+    /// Header values must be ASCII; ntfy decodes RFC 2047 for the rest.
+    static func header(_ text: String) -> String {
+        // The title comes from the pane, which a program can set: no control character reaches a header.
+        let line = String(String.UnicodeScalarView(text.unicodeScalars.map { $0.value < 0x20 || $0.value == 0x7F ? " " : $0 }))
+        if line.allSatisfy({ $0.isASCII }) { return line }
+        return "=?UTF-8?B?" + Data(line.utf8).base64EncodedString() + "?="
+    }
+}
+
 /// Sends channel requests off the main thread, with errors in words that never carry the URL (it holds the secret).
 public enum NoticeDelivery {
     /// The body of a 2xx answer.
@@ -376,6 +618,17 @@ public enum NoticeDelivery {
                 }
                 done.resume(returning: body)
             }.resume()
+        }
+    }
+
+    /// Runs `attempt`, and once more after `pause` when it fails and `once` is true.
+    public static func retrying(once: Bool = true, pause: Duration = .seconds(2),
+                                _ attempt: @Sendable () async throws -> Data) async throws -> Data {
+        do {
+            return try await attempt()
+        } catch where once {
+            try? await Task.sleep(for: pause)
+            return try await attempt()
         }
     }
 

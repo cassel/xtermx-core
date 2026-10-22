@@ -75,6 +75,34 @@ public final class HostConnection {
     public private(set) var receivedFile: ReceivedFile?
     public private(set) var fileTransferMaximumBytes: Int?
     public private(set) var fileUploadProgress: Double?
+    /// Dev servers the host lets this device preview.
+    public private(set) var devServers: [DevServerPort] = []
+    /// The host announced dev servers, so it understands tunnel messages.
+    public private(set) var supportsTunnels = false
+    @ObservationIgnored private var tunnels: [UUID: TunnelEvents] = [:]
+    /// This device's opt-in to the host's shared clipboard; kept by the app per pairing.
+    public var shareClipboard = false {
+        didSet {
+            guard shareClipboard != oldValue, hostSharesClipboard else { return }
+            send(.clipboardOptIn(shareClipboard))
+        }
+    }
+    /// The host's shared clipboard text arrived.
+    @ObservationIgnored public var onClipboard: ((String) -> Void)?
+    private var hostSharesClipboard: Bool { status == .connected && !usePolling && permissions?.shareClipboard == true }
+    /// Both sides want the shared clipboard and the host understands it.
+    public var canShareClipboard: Bool { shareClipboard && hostSharesClipboard }
+
+    /// Sends clipboard text; false (and nothing sent) when sharing is off on either side or the text is not allowed.
+    @discardableResult
+    public func sendClipboard(_ text: String) -> Bool {
+        guard canShareClipboard, ClipboardRules.accepts(text) else { return false }
+        send(.clipboard(text: text))
+        return true
+    }
+
+    /// Services the host checks, when it shares them.
+    public private(set) var services: [ServiceStatus] = []
     @ObservationIgnored private var activeFileUpload: UUID?
     @ObservationIgnored private var fileWaiters: [UUID: (step: UUID, continuation: CheckedContinuation<FileTransferReply, Error>)] = [:]
     /// The address currently in use.
@@ -93,16 +121,40 @@ public final class HostConnection {
     @ObservationIgnored private var resumeProbeTask: Task<Void, Never>?
     @ObservationIgnored private var resumeProbeID: Date?
     @ObservationIgnored private var lastProbeSecond: TimeInterval = 0
+    /// Round trip of the last `measureLatency()` ping, in milliseconds.
+    public private(set) var latencyMilliseconds: Double?
+    /// Latency pings use dates before 1970 so they never match a resume probe (whole seconds after).
+    @ObservationIgnored private var latencyProbe: (id: Date, sentAt: ContinuousClock.Instant)?
+    @ObservationIgnored private var latencyCounter: TimeInterval = 0
     @ObservationIgnored private var wantsConnection = false
     @ObservationIgnored private var isBackgrounded = false
     @ObservationIgnored private var receiveTask: Task<Void, Never>?
     @ObservationIgnored private var sendTask: Task<Void, Never>?
-    @ObservationIgnored private var outbox: AsyncStream<Data>.Continuation?
+    private struct Outbound {
+        var frame: Data
+        var navigationID: UUID? = nil
+    }
+    private struct NavigationWaiter {
+        var id: UUID
+        var expires: Date
+        var valid: @MainActor () -> Bool
+        var continuation: CheckedContinuation<Bool, Never>
+    }
+    @ObservationIgnored private var navigationWaiter: NavigationWaiter?
+    @ObservationIgnored private var outbox: AsyncStream<Outbound>.Continuation?
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var subscribed: Set<String> = []
     /// The size each pane was last fitted to here, sent again before subscribing after a reconnect.
     @ObservationIgnored private var fittedSizes: [String: (cols: Int, rows: Int)] = [:]
     @ObservationIgnored private var addressIndex = 0
+    /// Addresses the host announced on this connection.
+    @ObservationIgnored private var liveAddresses: [String] = []
+    /// The host announced its current addresses (valid, Tailscale first); the app saves them in the pairing.
+    @ObservationIgnored public var onAddresses: (([String]) -> Void)?
+    /// Every address to try, Tailscale first: the pairing's, then any the host announced since.
+    public var addressList: [String] {
+        HostAddresses.ordered(HostAddresses.valid(pairing.addresses + liveAddresses))
+    }
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private let session: URLSession
     @ObservationIgnored private let transportFactory: TransportFactory?
@@ -226,7 +278,7 @@ public final class HostConnection {
         let deadline = Date.now.addingTimeInterval(timeout)
         while Date.now < deadline {
             if status == .connected, snapshotReceived { return true }
-            if case .failed = status, addressIndex >= pairing.addresses.count { return false }
+            if case .failed = status, addressIndex >= addressList.count { return false }
             try? await Task.sleep(for: .milliseconds(100))
         }
         return status == .connected && snapshotReceived
@@ -291,6 +343,15 @@ public final class HostConnection {
         send(.screen(paneID: paneID, lines: lines))
     }
 
+    /// Times one ping/pong over the live connection; every host answers `ping`, so no protocol change.
+    public func measureLatency() {
+        guard status == .connected, !usePolling else { return }
+        latencyCounter += 1
+        let probe = Date(timeIntervalSince1970: -latencyCounter)
+        latencyProbe = (probe, .now)
+        send(.ping(probe))
+    }
+
     public func send(_ message: ClientMessage) {
         if usePolling {
             Task { await rpc(message) }
@@ -300,17 +361,50 @@ public final class HostConnection {
         do {
             let frame = try sealer.seal(WireCoding.encoder().encode(message))
             sendSealer = sealer
-            outbox?.yield(frame)
+            outbox?.yield(Outbound(frame: frame))
         } catch {
             fail("encode: \(error)")
         }
     }
 
+    /// Ephemeral navigation: one outstanding event, never replayed after cancellation/reconnect.
+    public func navigationInput(paneID: String, bytes: Data, valid: @escaping @MainActor () -> Bool) async -> Bool {
+        await ephemeralInput(paneID: paneID, bytes: bytes, limit: 32, lifetime: 0.15, valid: valid)
+    }
+    public func reviewedInput(paneID: String, bytes: Data) async -> Bool {
+        await ephemeralInput(paneID: paneID, bytes: bytes, limit: 65_536, lifetime: 5) { [weak self] in
+            self?.status == .connected && self?.canControl(paneID) == true
+        }
+    }
+    private func ephemeralInput(paneID: String, bytes: Data, limit: Int, lifetime: TimeInterval, valid: @escaping @MainActor () -> Bool) async -> Bool {
+        guard status == .connected, !usePolling, canControl(paneID), bytes.count <= limit,
+              navigationWaiter == nil, !Task.isCancelled, valid(), let outbox, var sealer = sendSealer else { return false }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(returning: false); return }
+                do {
+                    let frame = try sealer.seal(WireCoding.encoder().encode(ClientMessage.input(paneID: paneID, data: bytes)))
+                    sendSealer = sealer
+                    navigationWaiter = NavigationWaiter(id: id, expires: .now.addingTimeInterval(lifetime), valid: valid, continuation: continuation)
+                    outbox.yield(Outbound(frame: frame, navigationID: id))
+                } catch { continuation.resume(returning: false) }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.finishNavigation(id, sent: false) }
+        }
+    }
+    private func finishNavigation(_ id: UUID, sent: Bool) {
+        guard navigationWaiter?.id == id else { return }
+        let waiter = navigationWaiter; navigationWaiter = nil
+        waiter?.continuation.resume(returning: sent)
+    }
+
     // MARK: WebSocket transport
 
     private var currentAddress: String {
-        let all = pairing.addresses
-        return all[addressIndex % max(all.count, 1)]
+        let all = addressList
+        return all.isEmpty ? pairing.address : all[addressIndex % all.count]
     }
 
     private func openSocket(_ generation: Int) async {
@@ -361,14 +455,23 @@ public final class HostConnection {
 
     /// One task sends every frame, in order: the host refuses frames whose counter goes backwards.
     private func startSender(_ transport: FrameTransport, _ generation: Int) {
-        let (stream, continuation) = AsyncStream<Data>.makeStream()
+        let (stream, continuation) = AsyncStream<Outbound>.makeStream()
         outbox = continuation
         sendTask = Task { [weak self] in
-            for await frame in stream {
+            for await item in stream {
+                guard let self, generation == self.generation, !Task.isCancelled else { return }
+                if let id = item.navigationID {
+                    guard let waiter = self.navigationWaiter, waiter.id == id else { continue }
+                    guard Date.now < waiter.expires, waiter.valid(), self.status == .connected else {
+                        self.finishNavigation(id, sent: false); continue
+                    }
+                }
                 do {
-                    try await transport.send(frame)
+                    try await transport.send(item.frame)
+                    if let id = item.navigationID { self.finishNavigation(id, sent: true) }
                 } catch {
-                    self?.fail(error.localizedDescription, generation: generation)
+                    if let id = item.navigationID { self.finishNavigation(id, sent: false) }
+                    self.fail(error.localizedDescription, generation: generation)
                     return
                 }
             }
@@ -451,14 +554,16 @@ public final class HostConnection {
     private func apply(_ message: HostMessage) {
         switch message {
         case .fileTransferSupport(let maximum, let chunk):
-            if maximum > 0, chunk >= RemoteFileRules.chunkBytes { fileTransferMaximumBytes = min(maximum, RemoteFileRules.maximumTransferBytes) }
+            if maximum > 0, chunk >= RemoteFileRules.chunkBytes { fileTransferMaximumBytes = maximum }
         case .fileTransfer(let reply):
             if case .complete(_, let file) = reply { receivedFile = file }
             fileWaiters.removeValue(forKey: reply.id)?.continuation.resume(returning: reply)
         case .deviceChallenge(let challenge):
             if challenge == expectedIdentityChallenge, let proof = try? identity?.proof(for: challenge) { send(.identifyDevice(proof)) }
         case .permissions(let permissions):
+            let wasSharing = self.permissions?.shareClipboard == true
             self.permissions = permissions
+            if permissions.shareClipboard, !wasSharing, shareClipboard, !usePolling { send(.clipboardOptIn(true)) }
             if !permissions.manageRooms { remoteRooms = [] }
         case .rooms(let rooms):
             remoteRooms = rooms
@@ -501,15 +606,76 @@ public final class HostConnection {
         case .error(let code, let text):
             lastError = "\(code): \(text)"
         case .pong(let probe):
+            if let pending = latencyProbe, pending.id == probe {
+                let elapsed = (ContinuousClock.now - pending.sentAt).components
+                latencyMilliseconds = Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15
+                latencyProbe = nil
+            }
             if probe == resumeProbeID {
                 resumeProbeTask?.cancel()
                 resumeProbeTask = nil
                 resumeProbeID = nil
             }
+        case .devServers(let ports):
+            supportsTunnels = true
+            devServers = ports
+        case .tunnelOpened(let id):
+            tunnels[id]?.opened()
+        case .tunnelData(let id, let data):
+            tunnels[id]?.received(data)
+        case .tunnelClosed(let id, let reason):
+            tunnels.removeValue(forKey: id)?.closed(reason)
+        case .services(let list):
+            services = list
+        case .addresses(let list):
+            let valid = HostAddresses.ordered(HostAddresses.valid(list))
+            guard !valid.isEmpty else { break }
+            // Keep the index on the address in use, since the list it points into changes.
+            let inUse = activeAddress
+            liveAddresses = valid
+            if let i = addressList.firstIndex(of: inUse) { addressIndex = i }
+            onAddresses?(valid)
+        case .clipboard(let text):
+            if shareClipboard, ClipboardRules.accepts(text) { onClipboard?(text) }
         }
     }
 
+    // MARK: Dev server tunnels
+
+    public struct TunnelEvents {
+        public var opened: @MainActor () -> Void
+        public var received: @MainActor (Data) -> Void
+        public var closed: @MainActor (String?) -> Void
+        public init(opened: @escaping @MainActor () -> Void, received: @escaping @MainActor (Data) -> Void,
+                    closed: @escaping @MainActor (String?) -> Void) {
+            self.opened = opened; self.received = received; self.closed = closed
+        }
+    }
+
+    /// Opens a stream to a port the host shares. Nil when this host does not offer it.
+    public func openTunnel(port: UInt16, paneID: String? = nil, events: TunnelEvents) -> UUID? {
+        guard supportsTunnels, !usePolling, status == .connected,
+              DevServerTunnelRules.allows(port: port, paneID: paneID, in: devServers) else { return nil }
+        let id = UUID()
+        tunnels[id] = events
+        send(.tunnelOpen(streamID: id, port: port, paneID: paneID))
+        return id
+    }
+
+    public func writeTunnel(_ id: UUID, _ data: Data) {
+        guard tunnels[id] != nil else { return }
+        for chunk in DevServerTunnelRules.chunks(data) { send(.tunnelData(streamID: id, data: chunk)) }
+    }
+
+    public func closeTunnel(_ id: UUID) {
+        guard tunnels.removeValue(forKey: id) != nil else { return }
+        send(.tunnelClose(streamID: id))
+    }
+
     private func tearDown() {
+        latencyProbe = nil
+        latencyMilliseconds = nil
+        if let id = navigationWaiter?.id { finishNavigation(id, sent: false) }
         connectTask?.cancel()
         connectTask = nil
         deadlineTask?.cancel()
@@ -522,6 +688,11 @@ public final class HostConnection {
         let waiters = fileWaiters; fileWaiters = [:]
         for waiter in waiters.values { waiter.continuation.resume(throwing: FileUploadFailure("Disconnected during the file transfer.")) }
         expectedIdentityChallenge = nil
+        supportsTunnels = false
+        devServers = []
+        services = []
+        let open = tunnels; tunnels = [:]
+        for events in open.values { events.closed("Disconnected from the host.") }
         permissions = nil
         remoteRooms = []
         receivedFile = nil
@@ -548,7 +719,7 @@ public final class HostConnection {
         guard let limit = fileTransferMaximumBytes else { throw FileUploadFailure("Update XTermX on this Mac to send large files from the terminal. Older hosts only support 4 MB through Rooms & files.") }
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true, let bytes = values.fileSize, bytes <= limit,
-              RemoteFileRules.validName(url.lastPathComponent) else { throw FileUploadFailure("Choose a regular file up to 64 MB with a plain filename.") }
+              RemoteFileRules.validName(url.lastPathComponent) else { throw FileUploadFailure("Choose a regular file up to \(ByteCountFormatter.string(fromByteCount: Int64(limit), countStyle: .binary)) with a plain filename.") }
         let id = UUID(); activeFileUpload = id; fileUploadProgress = 0
         defer { activeFileUpload = nil; fileUploadProgress = nil }
         do {
@@ -621,10 +792,18 @@ public final class HostConnection {
         }
     }
 
+    /// The device moved to another network (Wi‑Fi to cellular, a new Wi‑Fi): start again from the best address.
+    public func networkChanged() {
+        guard wantsConnection, !isBackgrounded else { return }
+        addressIndex = 0
+        guard !usePolling else { return }
+        fail("The network changed. Reconnecting…", rotate: false, retryDelay: 0.2)
+    }
+
     private func scheduleReconnect(delay: Double? = nil) {
         reconnectTask?.cancel()
         let generation = generation
-        let delay = delay ?? (addressIndex % max(pairing.addresses.count, 1) == 0 ? 3 : 0.3)
+        let delay = delay ?? (addressIndex % max(addressList.count, 1) == 0 ? 3 : 0.3)
         reconnectTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(delay)) } catch { return }
             guard let self, generation == self.generation, self.wantsConnection,

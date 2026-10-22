@@ -52,15 +52,24 @@ public struct SpawnRequest: Codable, Sendable, Hashable {
     public var initialInput: String?
     /// Start the agent with its own skip-permissions flag, this once.
     public var bypass: Bool
+    /// Reopen a past conversation by id, or "" for the agent's own session picker. Agents without one start fresh.
+    public var resume: String?
+    /// Shell for the pane, one listed in /etc/shells; nil means the person's login shell.
+    public var shell: String?
+    /// Give this agent pane its own Git worktree; nil follows the host setting.
+    public var isolate: Bool?
 
     public init(kind: PaneKind, agentID: String? = nil, cwd: String? = nil, title: String? = nil,
-                initialInput: String? = nil, bypass: Bool = false) {
+                initialInput: String? = nil, bypass: Bool = false, resume: String? = nil, shell: String? = nil, isolate: Bool? = nil) {
         self.kind = kind
         self.agentID = agentID
         self.cwd = cwd
         self.title = title
         self.initialInput = initialInput
         self.bypass = bypass
+        self.resume = resume
+        self.shell = shell
+        self.isolate = isolate
     }
 }
 
@@ -110,6 +119,17 @@ public enum ClientMessage: Codable, Sendable {
     /// Plain-text screen of a pane, for clients without a terminal emulator.
     case screen(paneID: String, lines: Int)
     case ping(Date)
+    /// Open a TCP stream to a dev server the host shares. Send only to hosts that sent `devServers`:
+    /// older hosts close connections on messages they do not know.
+    /// `paneID` names the pane whose server is meant; hosts then check that pair, not just the port.
+    case tunnelOpen(streamID: UUID, port: UInt16, paneID: String? = nil)
+    case tunnelData(streamID: UUID, data: Data)
+    case tunnelClose(streamID: UUID)
+    /// Shared clipboard text (≤ 256 KB). Send only to hosts whose permissions say `shareClipboard`:
+    /// older hosts close connections on messages they do not know.
+    case clipboard(text: String)
+    /// This device wants the host's clipboard changes. Same rule as `clipboard`.
+    case clipboardOptIn(Bool)
 }
 
 public enum HostMessage: Codable, Sendable {
@@ -132,6 +152,17 @@ public enum HostMessage: Codable, Sendable {
     case spawned(PaneInfo)
     case error(code: String, message: String)
     case pong(Date)
+    /// Dev servers devices may preview; empty while sharing is off. Its arrival also means the host speaks tunnels.
+    case devServers([DevServerPort])
+    case tunnelOpened(streamID: UUID)
+    case tunnelData(streamID: UUID, data: Data)
+    case tunnelClosed(streamID: UUID, reason: String?)
+    /// Services the host checks (empty while sharing them is off). Older clients skip it.
+    case services([ServiceStatus])
+    /// The host's clipboard changed; only sent to devices that opted in.
+    case clipboard(text: String)
+    /// The ways in the host has right now (Tailscale, LAN…); clients update their saved pairing. Older clients skip it.
+    case addresses([String])
 }
 
 /// One request and its answer over HTTP (`POST /rpc`), used by the Watch.

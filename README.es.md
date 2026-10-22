@@ -68,7 +68,7 @@ Las cuentas, suscripciones e instalaciones de las CLIs son tuyas. XTermX no incl
 
 ## Compilar y ejecutar
 
-[Descargar la compilación de desarrollo para Mac](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.17) — universal Apple Silicon + Intel, macOS 15+. Tiene firma ad-hoc y **no está notarizada por Apple**; macOS puede bloquear la primera apertura. Las instrucciones para compilar siguen abajo. No incluye las apps propietarias de iOS/Watch.
+[Descargar la compilación de desarrollo para Mac](https://github.com/cassel/xtermx-core/releases/tag/dev-2026.10.22-1458) — universal Apple Silicon + Intel, macOS 15+. Tiene firma ad-hoc y **no está notarizada por Apple**; macOS puede bloquear la primera apertura. Las instrucciones para compilar siguen abajo. No incluye las apps propietarias de iOS/Watch.
 
 ### Mac
 
@@ -120,7 +120,7 @@ En el Mac, abre el menú del globo o pulsa **⌘⇧G**, activa el acceso remoto 
 - El historial conserva los dispositivos después de desconectarse; una entrada offline no indica una conexión activa.
 - Los paneles pueden compartirse como **View & control**, **View only** o **Private**.
 - El host controla la creación remota de terminales, la recepción de archivos y los permisos de Control Rooms.
-- Recibir archivos requiere habilitación. El protocolo de adjuntos admite hasta 64 MB por archivo; los hosts antiguos tienen una vía heredada con un límite menor.
+- Recibir archivos requiere habilitación. El host establece el límite de adjuntos en Ajustes → Acceso remoto (500 MB por archivo de forma predeterminada), con una cuota total de almacenamiento opcional. Los cambios llegan inmediatamente a los dispositivos enlazados. Las cargas antiguas de Salas y archivos siguen limitadas a 4 MB.
 - **Forget all devices** cambia el secreto de emparejamiento y exige emparejar de nuevo.
 
 Los frames de terminal usan cifrado autenticado ChaCha20-Poly1305, nonces nuevos por conexión y contadores contra replay. Los puertos son **47820** para WebSocket y **47821** para el transporte HTTP compatible con Watch; Bonjour anuncia `_xtermx._tcp`. La conectividad depende de tu LAN/VPN/firewall. No presupongas que los nombres `.local` funcionan fuera de tu LAN.

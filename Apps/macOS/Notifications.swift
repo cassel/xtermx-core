@@ -7,15 +7,19 @@ import XTermXKit
 
 /// Where notices go.
 enum NoticeChannel: String, CaseIterable, Identifiable {
-    case mac, telegram, slack
+    case mac, telegram, slack, webhook, ntfy
     var id: String { rawValue }
 }
 
-/// Chat-channel secrets (the Telegram bot token, the Slack webhook address), in the Keychain like `PairingStore`.
+/// Channel secrets (the Telegram bot token, the Slack and generic webhook addresses and header), in the Keychain like `PairingStore`.
 enum NoticeSecrets {
     private static let service = "XTermX.notifications"
     static let telegramToken = "telegram.token"
     static let slackWebhook = "slack.webhook"
+    static let webhookURL = "webhook.url"
+    static let webhookHeader = "webhook.header"
+    static let ntfyTopic = "ntfy.topic"
+    static let ntfyToken = "ntfy.token"
 
     static func read(_ account: String) -> String? {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
@@ -48,7 +52,7 @@ struct ChannelStatus: Equatable {
     }
 }
 
-/// Tells the person when an agent is done or needs them: Mac notifications, Telegram, Slack.
+/// Tells the person when an agent is done or needs them: Mac notifications, Telegram, Slack, a webhook.
 /// Which changes count lives in `AgentNoticeWatcher`; this sends them where the person chose.
 @MainActor
 @Observable
@@ -57,7 +61,12 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
         static let mac = "xtermx.notify.mac"
         static let telegram = "xtermx.notify.telegram"
         static let slack = "xtermx.notify.slack"
+        static let webhook = "xtermx.notify.webhook"
+        static let ntfy = "xtermx.notify.ntfy"
+        static let ntfyServer = "xtermx.notify.ntfy.server"
+        /// E4.4's list of turned-off pairs; read once to migrate into `matrix`.
         static let muted = "xtermx.notify.muted"
+        static let matrix = "xtermx.notify.matrix"
         static let bot = "xtermx.notify.telegram.bot"
         static let chatID = "xtermx.notify.telegram.chatID"
         static let chatName = "xtermx.notify.telegram.chatName"
@@ -73,6 +82,10 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
     @ObservationIgnored private var dueTask: Task<Void, Never>?
     @ObservationIgnored private var telegramToken: String?
     @ObservationIgnored private var slackAddress: String?
+    @ObservationIgnored private var webhookAddress: String?
+    @ObservationIgnored private var webhookHeader: String?
+    @ObservationIgnored private var ntfyTopicName: String?
+    @ObservationIgnored private var ntfyToken: String?
     private let defaults = UserDefaults.standard
 
     // MARK: Switches
@@ -82,8 +95,10 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
     private(set) var macDenied = false
     var telegramOn: Bool { didSet { defaults.set(telegramOn, forKey: Key.telegram) } }
     var slackOn: Bool { didSet { defaults.set(slackOn, forKey: Key.slack) } }
-    /// "channel.event" pairs turned off; everything is on until the person says otherwise.
-    private var muted: Set<String> { didSet { defaults.set(muted.sorted(), forKey: Key.muted) } }
+    var webhookOn: Bool { didSet { defaults.set(webhookOn, forKey: Key.webhook) } }
+    var ntfyOn: Bool { didSet { defaults.set(ntfyOn, forKey: Key.ntfy) } }
+    /// Which events go to which channel (only the person's own choices are stored).
+    private var matrix: NoticeMatrix { didSet { defaults.set(matrix.choices, forKey: Key.matrix) } }
 
     // MARK: Telegram
 
@@ -107,12 +122,43 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
     var slackBusy = false
     var macStatus: ChannelStatus?
 
+    // MARK: Webhook
+
+    private(set) var webhookHasURL = false
+    /// The saved address's host, to show which one is set without showing the secret path.
+    var webhookHost: String? { webhookAddress.flatMap { URL(string: $0)?.host } }
+    var webhookStatus: ChannelStatus?
+    var webhookBusy = false
+
+    // MARK: ntfy
+
+    /// Empty means ntfy.sh. Not a secret; the topic is.
+    private(set) var ntfyServer: String { didSet { defaults.set(ntfyServer, forKey: Key.ntfyServer) } }
+    var ntfyHasTopic: Bool { ntfyTopicName != nil }
+    /// "ntfy.sh · alerts…": enough to recognise the topic without showing all of it.
+    var ntfyLabel: String? {
+        guard let topic = ntfyTopicName, let t = NtfyTopic(server: ntfyServer, topic: topic) else { return nil }
+        return "\(t.url.host ?? "ntfy") · \(topic.prefix(4))…"
+    }
+    var ntfyStatus: ChannelStatus?
+    var ntfyBusy = false
+
     override init() {
         let d = UserDefaults.standard
         macOn = d.bool(forKey: Key.mac)
         telegramOn = d.bool(forKey: Key.telegram)
         slackOn = d.bool(forKey: Key.slack)
-        muted = Set(d.stringArray(forKey: Key.muted) ?? [])
+        webhookOn = d.bool(forKey: Key.webhook)
+        ntfyOn = d.bool(forKey: Key.ntfy)
+        ntfyServer = d.string(forKey: Key.ntfyServer) ?? ""
+        if let choices = d.dictionary(forKey: Key.matrix) as? [String: Bool] {
+            matrix = NoticeMatrix(choices: choices)
+        } else {
+            let migrated = NoticeMatrix.migrating(muted: d.stringArray(forKey: Key.muted) ?? [])
+            matrix = migrated
+            d.set(migrated.choices, forKey: Key.matrix)
+            d.removeObject(forKey: Key.muted)
+        }
         telegramBot = d.string(forKey: Key.bot)
         if let id = d.string(forKey: Key.chatID).flatMap(Int64.init), let name = d.string(forKey: Key.chatName) {
             telegramChat = TelegramBot.Chat(id: id, name: name)
@@ -120,6 +166,11 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
         telegramToken = NoticeSecrets.read(NoticeSecrets.telegramToken)
         slackAddress = NoticeSecrets.read(NoticeSecrets.slackWebhook)
         slackHasWebhook = slackAddress != nil
+        webhookAddress = NoticeSecrets.read(NoticeSecrets.webhookURL)
+        webhookHeader = NoticeSecrets.read(NoticeSecrets.webhookHeader)
+        webhookHasURL = webhookAddress != nil
+        ntfyTopicName = NoticeSecrets.read(NoticeSecrets.ntfyTopic)
+        ntfyToken = NoticeSecrets.read(NoticeSecrets.ntfyToken)
         super.init()
         UNUserNotificationCenter.current().delegate = self
         let firstRun = d.object(forKey: Key.mac) == nil
@@ -129,12 +180,11 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
     // MARK: Choices
 
     func wants(_ channel: NoticeChannel, _ event: AgentNoticeEvent) -> Bool {
-        !muted.contains("\(channel.rawValue).\(event.rawValue)")
+        matrix.wants(channel.rawValue, event)
     }
 
     func setWants(_ channel: NoticeChannel, _ event: AgentNoticeEvent, _ on: Bool) {
-        let key = "\(channel.rawValue).\(event.rawValue)"
-        if on { muted.remove(key) } else { muted.insert(key) }
+        matrix.set(channel.rawValue, event, on)
     }
 
     func isOn(_ channel: NoticeChannel) -> Bool {
@@ -142,6 +192,8 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
         case .mac: macOn
         case .telegram: telegramOn && telegramHasToken && telegramChat != nil
         case .slack: slackOn && slackHasWebhook
+        case .webhook: webhookOn && webhookHasURL
+        case .ntfy: ntfyOn && ntfyHasTopic
         }
     }
 
@@ -208,6 +260,8 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
             if isOn(.mac), wants(.mac, notice.event) { showOnMac(notice) }
             if isOn(.telegram), wants(.telegram, notice.event) { Task { await sendTelegram(notice, isTest: false) } }
             if isOn(.slack), wants(.slack, notice.event) { Task { await sendSlack(notice, isTest: false) } }
+            if isOn(.webhook), wants(.webhook, notice.event) { Task { await sendWebhook(notice, isTest: false) } }
+            if isOn(.ntfy), wants(.ntfy, notice.event) { Task { await sendNtfy(notice, isTest: false) } }
         }
     }
 
@@ -329,6 +383,94 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
             if isTest || slackStatus?.isError == true { slackStatus = .ok("Sent. Check the channel.") }
         } catch {
             slackStatus = isTest ? .failed(error) : ChannelStatus(text: "Last notice didn't go through: \(ChannelStatus.failed(error).text)", isError: true)
+        }
+    }
+
+    // MARK: Webhook setup
+
+    /// Keeps the address and the optional "Name: value" header in the Keychain.
+    func saveWebhook(_ address: String, header: String) {
+        guard GenericWebhook(address) != nil else { webhookStatus = .failed(NoticeChannelError.badAddress); return }
+        guard let hook = GenericWebhook(address, header: header) else {
+            webhookStatus = .failed(NoticeChannelError.badHeader)
+            return
+        }
+        let line = hook.header.map { "\($0.name): \($0.value)" }
+        NoticeSecrets.write(NoticeSecrets.webhookURL, hook.url.absoluteString)
+        NoticeSecrets.write(NoticeSecrets.webhookHeader, line)
+        webhookAddress = hook.url.absoluteString
+        webhookHeader = line
+        webhookHasURL = true
+        webhookOn = true
+        webhookStatus = .ok("Saved. Send a test to be sure.")
+    }
+
+    func sendWebhookTest() async { await sendWebhook(AgentNoticeText.test(from: hostName), isTest: true) }
+
+    func removeWebhook() {
+        NoticeSecrets.write(NoticeSecrets.webhookURL, nil)
+        NoticeSecrets.write(NoticeSecrets.webhookHeader, nil)
+        webhookAddress = nil
+        webhookHeader = nil
+        webhookHasURL = false
+        webhookOn = false
+        webhookStatus = nil
+    }
+
+    private func sendWebhook(_ notice: AgentNotice, isTest: Bool) async {
+        guard let hook = webhookAddress.flatMap({ GenericWebhook($0, header: webhookHeader) }) else { return }
+        if isTest { webhookBusy = true }
+        defer { if isTest { webhookBusy = false } }
+        let request = hook.post(notice, host: hostName)
+        do {
+            // A 10 s timeout, then one more try.
+            _ = try await NoticeDelivery.retrying { try await NoticeDelivery.perform(request) }
+            if isTest || webhookStatus?.isError == true { webhookStatus = .ok("Sent. The server said OK.") }
+        } catch {
+            webhookStatus = isTest ? .failed(error) : ChannelStatus(text: "Last notice didn't go through: \(ChannelStatus.failed(error).text)", isError: true)
+        }
+    }
+
+    // MARK: ntfy setup
+
+    func saveNtfy(server: String, topic: String, token: String) {
+        guard let t = NtfyTopic(server: server, topic: topic, token: token) else {
+            let serverOK = NtfyTopic(server: server, topic: "x") != nil
+            ntfyStatus = .failed(serverOK ? NoticeChannelError.badTopic : NoticeChannelError.badAddress)
+            return
+        }
+        let name = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        ntfyServer = server.trimmingCharacters(in: .whitespacesAndNewlines)
+        NoticeSecrets.write(NoticeSecrets.ntfyTopic, name)
+        NoticeSecrets.write(NoticeSecrets.ntfyToken, t.token)
+        ntfyTopicName = name
+        ntfyToken = t.token
+        ntfyOn = true
+        ntfyStatus = .ok("Saved. Subscribe to the topic in the ntfy app, then send a test.")
+    }
+
+    func sendNtfyTest() async { await sendNtfy(AgentNoticeText.test(from: hostName), isTest: true) }
+
+    func removeNtfy() {
+        NoticeSecrets.write(NoticeSecrets.ntfyTopic, nil)
+        NoticeSecrets.write(NoticeSecrets.ntfyToken, nil)
+        ntfyTopicName = nil
+        ntfyToken = nil
+        ntfyServer = ""
+        ntfyOn = false
+        ntfyStatus = nil
+    }
+
+    private func sendNtfy(_ notice: AgentNotice, isTest: Bool) async {
+        guard let topic = ntfyTopicName.flatMap({ NtfyTopic(server: ntfyServer, topic: $0, token: ntfyToken) }) else { return }
+        if isTest { ntfyBusy = true }
+        defer { if isTest { ntfyBusy = false } }
+        let request = topic.post(notice)
+        do {
+            _ = try await NoticeDelivery.retrying { try await NoticeDelivery.perform(request) }
+            if isTest || ntfyStatus?.isError == true { ntfyStatus = .ok("Sent. Check the ntfy app.") }
+        } catch {
+            ntfyStatus = isTest ? .failed(error) : ChannelStatus(text: "Last notice didn't go through: \(ChannelStatus.failed(error).text)", isError: true)
         }
     }
 

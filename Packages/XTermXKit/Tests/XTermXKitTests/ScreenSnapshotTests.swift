@@ -19,6 +19,28 @@ import Testing
         }
     }
 
+    @Test func reconnectPreservesTrackingEncodingAndAlternateScrollAcrossAllPointerProtocols() {
+        let delegate = Quiet()
+        for tracking in [9, 1000, 1002, 1003] {
+            for encoding in [0, 1005, 1006, 1015, 1016] {
+                let host = Terminal(delegate: delegate, options: TerminalOptions(cols: 40, rows: 6))
+                let phone = Terminal(delegate: delegate, options: TerminalOptions(cols: 40, rows: 6))
+                host.feed(text: "\u{1b}[?1049h\u{1b}[?\(tracking)h\u{1b}[?1007l\u{1b}[>1s")
+                if encoding != 0 { host.feed(text: "\u{1b}[?\(encoding)h") }
+                phone.feed(text: "\u{1b}[?1003h\u{1b}[?1016h") // Existing view from a different program.
+                phone.feed(byteArray: Array(ScreenSnapshot.ansi(host)))
+                #expect(phone.hostPointerModes == host.hostPointerModes)
+            }
+        }
+    }
+    @Test func reconnectToPlainShellClearsStaleMouseTrackingAndEncoding() {
+        let delegate = Quiet()
+        let host = Terminal(delegate: delegate, options: TerminalOptions(cols: 40, rows: 6))
+        let phone = Terminal(delegate: delegate, options: TerminalOptions(cols: 40, rows: 6))
+        phone.feed(text: "\u{1b}[?1049h\u{1b}[?1002h\u{1b}[?1006h\u{1b}[>1s")
+        phone.feed(byteArray: Array(ScreenSnapshot.ansi(host)))
+        #expect(phone.hostPointerModes == host.hostPointerModes)
+    }
     @Test func redrawsAfterTheHostNarrowsToAPhone() {
         let delegate = Quiet()
         let host = Terminal(delegate: delegate, options: TerminalOptions(cols: 80, rows: 10, scrollback: 500))

@@ -67,15 +67,10 @@ struct MainWindow: View {
             if model.switcher != nil { QuickSwitcher() }
         }
         .overlay(alignment: .topTrailing) {
-            // Approval cards float over everything: an agent is waiting, and silence is a no.
-            if !model.manager.approvals.isEmpty || !model.server.spawnGate.approvals.isEmpty {
+            // A device asking to open a pane floats over everything. Agents' cards live in the sidebar's Needs you.
+            if !model.server.spawnGate.approvals.isEmpty {
                 VStack(spacing: 8) {
                     ForEach(model.server.spawnGate.approvals) { approval in RemoteSpawnCard(approval: approval) }
-                    ForEach(model.manager.approvals) { req in
-                        ApprovalCard(req) { model.manager.respond(req.id, $0) }
-                            .background(theme.chrome.popover.color, in: RoundedRectangle(cornerRadius: 8))
-                            .shadow(color: .black.opacity(0.45), radius: 14, y: 6)
-                    }
                 }
                 .frame(width: 340)
                 .padding(.top, 46).padding(.trailing, 12)
@@ -107,6 +102,7 @@ struct TitleBar: View {
             }
             Spacer(minLength: 8)
             UsageMeters()
+            ServicesChip()
             AppMemoryBadge()
             if model.pendingLaunches > 0 { ProgressView().controlSize(.mini).help("Preparing terminals") }
             let counts = AgentCounts(panes: model.manager.panes, elsewhere: model.manager.overview.elsewhere)
@@ -487,6 +483,7 @@ struct PaneView: View {
                     PaneChatView(paneID: paneID, session: chat, focused: focused)
                 }
             }
+            .modifier(SSHDropTarget(session: model.sshSessions[paneID]))
             .simultaneousGesture(TapGesture().onEnded {
                 binder.reclaim(paneID: paneID, model: model)
                 model.focus(paneID)
@@ -572,6 +569,7 @@ final class PaneFeedBinder {
         }
         guard listener == nil, remote == nil else { return }
         boundPaneID = paneID
+        feed.isLocalPane = false
         // SwiftUI can replace the AppKit view while retaining this binder when a pane moves.
         // Its replacement needs a screen even if the program is idle and its size is unchanged.
         feed.onViewAttached = { [weak self, weak model] in
@@ -584,6 +582,7 @@ final class PaneFeedBinder {
                 remote.connection.detach(paneID: remote.pane, token: remote.token)
             } else if let session = model.manager.session(paneID) {
                 self.feed.receive(session.snapshot())
+                model.manager.redraw(paneID)
             }
         }
         if let leaf = model.remoteLeaves[paneID], let connection = model.machines.connection(leaf.machine) {
@@ -602,6 +601,7 @@ final class PaneFeedBinder {
             remote = (connection, leaf.pane, token)
             return
         }
+        feed.isLocalPane = true
         // UIKit/AppKit can finish its first layout before SwiftUI calls onAppear.
         size = feed.size
         if let size { model.manager.setHomeSize(paneID, cols: size.cols, rows: size.rows) }
@@ -631,6 +631,12 @@ final class PaneFeedBinder {
             // The window or the splits changed: a phone using the pane keeps it until it leaves.
             model?.manager.setHomeSize(paneID, cols: cols, rows: rows)
         }
+        // A layout that settled before onResize was set never reached the terminal.
+        if let natural = feed.size, natural.cols != size?.cols || natural.rows != size?.rows {
+            size = natural
+            model.manager.setHomeSize(paneID, cols: natural.cols, rows: natural.rows)
+        }
+        model.manager.redraw(paneID)
         listener = model.manager.addListener { [weak self, weak model] event in
             guard let self, let model else { return }
             switch event {
@@ -710,7 +716,21 @@ struct PaneHeader: View {
     @State private var renaming = false
     @State private var name = ""
 
+    @State private var forwarding = false
+    @State private var forwardPort = ""
+    @State private var forwardError: String?
+
     private func editName() { name = pane.customName ?? ""; renaming = true }
+
+    private func addForward() {
+        guard let ssh = model.sshSessions[leafID], let port = Int(forwardPort) else { return }
+        Task {
+            do {
+                let forward = try await ssh.addLocalForward(remotePort: port)
+                if let url = forward.localURL { NSWorkspace.shared.open(url) }
+            } catch { forwardError = error.localizedDescription }
+        }
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -745,6 +765,27 @@ struct PaneHeader: View {
                     .padding(.horizontal, 5).padding(.vertical, 1)
                     .background(pane.state.color.opacity(0.18), in: Capsule())
                     .foregroundStyle(pane.state.color)
+            }
+            if model.remoteLeaves[leafID] == nil, model.sshSessions[leafID] == nil {
+                ForEach(model.server.devServers.ports(for: pane.id)) { server in
+                    DevServerChip(title: server.label, url: server.localURL,
+                                  help: "\(server.process ?? "A program") listens on port \(server.port)"
+                                      + (model.server.permissions.shareDevServers ? ". Paired devices can preview it." : "."))
+                }
+            }
+            if let ssh = model.sshSessions[leafID] {
+                ForEach(ssh.forwards) { forward in
+                    if let url = forward.localURL {
+                        DevServerChip(title: forward.label, url: url,
+                                      help: "Port \(forward.remotePort) on \(ssh.host.host), forwarded to 127.0.0.1:\(forward.localPort)") {
+                            ssh.removeLocalForward(forward)
+                        }
+                    }
+                }
+                if ssh.status == .connected {
+                    Button { forwardPort = ""; forwarding = true } label: { Image(systemName: "point.3.connected.trianglepath.dotted") }
+                        .buttonStyle(.plain).accessibilityLabel("Forward a port…").help("Forward a port from the server (ssh -L)")
+                }
             }
             Spacer(minLength: 4)
             if model.dictation.session.paneID == leafID {
@@ -803,6 +844,14 @@ struct PaneHeader: View {
             Button("Use automatic name") { model.renamePane(leafID, to: "") }
             Button("Cancel", role: .cancel) {}
         } message: { Text("Shown on Mac, iPhone and Watch. Up to 60 characters.") }
+        .alert("Forward a port", isPresented: $forwarding) {
+            TextField("Port on the server", text: $forwardPort)
+            Button("Forward") { addForward() }.disabled(Int(forwardPort).map { !(1...65_535).contains($0) } ?? true)
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Opens 127.0.0.1 on this Mac to a port on the server's localhost, like ssh -L.") }
+        .alert("Could not forward the port", isPresented: Binding(get: { forwardError != nil }, set: { if !$0 { forwardError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(forwardError ?? "") }
         .contextMenu {
             Button("Rename pane…", action: editName).disabled(!model.canRenamePane(leafID))
             Divider()
@@ -822,128 +871,39 @@ struct PaneHeader: View {
     }
 }
 
-// MARK: - Welcome / compose
-
-struct WelcomeView: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.appTheme) private var theme
-    @State private var folder = ""
-    @State private var terminals = 0
-    @State private var agentCounts: [String: Int] = [:]
-    @State private var vertical = false
-    @State private var bypass = false
-    @State private var prompt = ""
+/// A server listening in a pane, or a port forwarded over SSH: click to open it in the browser.
+struct DevServerChip: View {
+    let title: String
+    let url: URL
+    let help: String
+    var onRemove: (() -> Void)? = nil
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("XTermX").font(.system(size: 26, weight: .bold))
-                    Text("Run many terminals, side by side.").foregroundStyle(theme.chrome.mutedForeground.color)
-                }
-
-                card("Working folder") {
-                    HStack {
-                        TextField("Choose a folder…", text: $folder).textFieldStyle(.roundedBorder)
-                        Button("Browse") { browse() }
-                    }
-                    if !model.recentFolders.isEmpty {
-                        FlowRow(items: Array(model.recentFolders.prefix(8))) { path in
-                            Button((path as NSString).lastPathComponent) { folder = path }
-                                .buttonStyle(.bordered).controlSize(.small).help(path)
-                        }
-                    }
-                }
-
-                card("Terminals") {
-                    Stepper("Plain terminals: \(terminals)", value: $terminals, in: 0...8)
-                    Picker("Layout", selection: $vertical) {
-                        Text("Horizontal").tag(false)
-                        Text("Vertical").tag(true)
-                    }
-                    .pickerStyle(.segmented).frame(width: 240)
-                }
-
-                card("AI agents") {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 8)], spacing: 8) {
-                        ForEach(model.manager.agents) { agent in
-                            HStack {
-                                AgentIcon(agent, size: 20)
-                                Text(agent.name).font(.system(size: 12))
-                                    .foregroundStyle(agent.installed ? theme.chrome.foreground.color : theme.chrome.mutedForeground.color)
-                                Spacer()
-                                if agent.installed {
-                                    Stepper("\(agentCounts[agent.id, default: 0])", value: Binding(
-                                        get: { agentCounts[agent.id, default: 0] },
-                                        set: { agentCounts[agent.id] = $0 }), in: 0...6)
-                                    .font(.system(size: 11, design: .monospaced)).fixedSize()
-                                } else {
-                                    Text("Not installed").font(.system(size: 10)).foregroundStyle(theme.chrome.mutedForeground.color)
-                                }
-                            }
-                            .padding(8)
-                            .background(theme.chrome.card.color, in: RoundedRectangle(cornerRadius: 8))
-                        }
-                    }
-                    TextField("First message for the agents (optional)", text: $prompt, axis: .vertical)
-                        .textFieldStyle(.roundedBorder).lineLimit(1...4)
-                    Toggle("Enable Bypass Mode (auto-approve CLI permissions)", isOn: $bypass)
-                }
-
-                HStack {
-                    if !model.workspaces.isEmpty { Button("Cancel") { model.composing = false } }
-                    Spacer()
-                    Button("Create workspace") { create() }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(total == 0)
-                        .help("Press ⌘↵ to create")
-                }
+        Menu {
+            Button("Open in Browser") { NSWorkspace.shared.open(url) }
+            Button("Copy URL") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url.absoluteString, forType: .string)
             }
-            .padding(28)
-            .frame(maxWidth: 820)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(theme.chrome.canvas.color)
-        .onAppear { if folder.isEmpty { folder = model.recentFolders.first ?? NSHomeDirectory() } }
-    }
-
-    private var total: Int { terminals + agentCounts.values.reduce(0, +) }
-
-    private func card<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionLabel(LocalizedStringKey(title))
-            content()
-        }
-        .padding(14)
-        .background(theme.chrome.background.color, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.chrome.border.color))
-    }
-
-    private func browse() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        if panel.runModal() == .OK, let url = panel.url { folder = url.path }
-    }
-
-    private func create() {
-        let cwd = folder.isEmpty ? nil : (folder as NSString).expandingTildeInPath
-        var requests: [SpawnRequest] = Array(repeating: SpawnRequest(kind: .shell, cwd: cwd), count: terminals)
-        for agent in model.manager.agents {
-            for _ in 0..<agentCounts[agent.id, default: 0] {
-                requests.append(SpawnRequest(kind: .agent, agentID: agent.id, cwd: cwd, initialInput: prompt.isEmpty ? nil : prompt, bypass: bypass))
+            if let onRemove {
+                Divider()
+                Button("Stop Forwarding", role: .destructive, action: onRemove)
             }
+        } label: {
+            Label("\(title) open", systemImage: "globe").font(.system(size: 9, weight: .semibold))
+        } primaryAction: {
+            NSWorkspace.shared.open(url)
         }
-        guard let first = requests.first else { return }
-        model.newWorkspace(first)
-        for r in requests.dropFirst() { model.split(vertical: vertical, r) }
-        if let cwd { model.rememberFolder(cwd) }
-        agentCounts = [:]
-        terminals = 0
-        prompt = ""
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .padding(.horizontal, 5).padding(.vertical, 1)
+        .background(Color.green.opacity(0.18), in: Capsule())
+        .foregroundStyle(Color.green)
+        .help(help)
+        .accessibilityLabel("Open \(title) in browser")
     }
 }
+
+// MARK: - Welcome / compose
 
 /// Wrapping row of small views.
 struct FlowRow<Item: Hashable, Content: View>: View {
@@ -974,6 +934,7 @@ struct RightPanel: View {
             case .controlRoom: ControlRoomView()
             case .agents: AgentActivityView()
             case .devices: ScrollView { DevicesView().padding(12) }
+            case .network: ScrollView { NetworkPanelView().padding(12) }
             }
         }
         .background(theme.chrome.background.color)
@@ -1083,6 +1044,7 @@ struct DevicesView: View {
                 .toggleStyle(.switch)
             if let error = model.server.lastError {
                 Text(error).font(.system(size: 11)).foregroundStyle(theme.chrome.destructive.color)
+                if PortHolders.isAddressInUse(error), !model.server.isRunning { PortConflictView() }
             }
             if model.server.isRunning {
                 if !addresses.isEmpty {
@@ -1112,7 +1074,7 @@ struct DevicesView: View {
                                                                   set: { model.server.allowRemoteSpawn = $0 }))
                 Toggle("Receive files from devices", isOn: Binding(get: { model.server.permissions.sendFiles }, set: { model.server.permissions.sendFiles = $0 }))
                     .toggleStyle(.switch)
-                Text("Terminal attachments: up to 64 MB per file. Older Rooms & files uploads: up to 4 MB.")
+                Text("Configure attachment limits in Settings → Remote access. Older Rooms & files uploads: up to 4 MB.")
                     .font(.caption).foregroundStyle(theme.chrome.mutedForeground.color)
             }
             SectionLabel("Devices · \(model.deviceRoster.count)")

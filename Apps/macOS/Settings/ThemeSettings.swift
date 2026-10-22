@@ -92,6 +92,7 @@ struct ThemeSettings: View {
 struct TerminalSettings: View {
     @Environment(AppModel.self) private var model
     @AppStorage("xtermx.chatTheme") private var chatTheme = AgentChatTheme.auto.rawValue
+    @AppStorage(ProgramClipboard.defaultsKey) private var programClipboard = false
 
     var body: some View {
         @Bindable var model = model
@@ -109,6 +110,8 @@ struct TerminalSettings: View {
             PaneDictationSettings()
             SettingsCard("Select and keep", "Copy selected terminal text when you finish selecting with the mouse.") {
                 Toggle("Copy when selecting text", isOn: $model.copyOnSelection).toggleStyle(.switch)
+                Toggle("Allow remote programs to set the clipboard", isOn: $programClipboard).toggleStyle(.switch)
+                Text("Programs in a pane, including ones over SSH or on another Mac, can copy text with OSC 52 (tmux, Neovim). It also reaches devices sharing the clipboard. They can never read it.").font(.caption)
                 Text("Drag to select, then ⌘C to copy. Hold Control to highlight links and click to open. Hold Option to send clicks to terminal programs.")
                     .font(.caption).foregroundStyle(.secondary)
             }

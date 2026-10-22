@@ -11,6 +11,11 @@ extension SSHSession {
     }
     private func files<T>(_ operation: @escaping @Sendable (SFTPClient) async throws -> T) async throws -> T {
         guard status == .connected, let client else { throw FileFailure("Connect to SSH before opening files.") }
+        #if os(iOS)
+        guard !sftpOperationBusy else { throw FileFailure("Wait for the previous SFTP operation to finish or disconnect this SSH session.") }
+        sftpOperationBusy = true
+        defer { sftpOperationBusy = false }
+        #endif
         return try await client.withSFTP(operation)
     }
     public func resolvedDirectory(_ path: String) async throws -> String {
@@ -48,6 +53,34 @@ extension SSHSession {
             }
         }
     }
+    /// Explicit SFTP upload, isolated from the interactive PTY, with bounded memory.
+    public func uploadFile(at source: URL, to path: String, maximumBytes: Int = SSHFileRules.uploadLimit,
+                           progress: (@MainActor (Double) -> Void)? = nil) async throws {
+        let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true, let size = values.fileSize,
+              maximumBytes > 0, size <= maximumBytes else { throw FileFailure("Choose a regular file within the configured upload limit.") }
+        try await files { sftp in
+            let reader = try FileHandle(forReadingFrom: source); defer { try? reader.close() }
+            // Exclusive creation prevents overwriting remote files/symlinks. A failed upload may
+            // leave this uniquely named file; the UI must disclose that rather than retry silently.
+            try await sftp.withFile(filePath: path, flags: [.write, .create, .forceCreate]) { file in
+                var offset = 0
+                while offset < size {
+                    try Task.checkCancellation()
+                    guard let data = try reader.read(upToCount: min(64 * 1024, size - offset)), !data.isEmpty else {
+                        throw FileFailure("The local file changed while uploading.")
+                    }
+                    try await file.write(ByteBuffer(bytes: data), at: UInt64(offset))
+                    offset += data.count
+                    if let progress { let fraction = Double(offset) / Double(max(size, 1)); await MainActor.run { progress(fraction) } }
+                }
+                guard try reader.seekToEnd() == UInt64(size) else { throw FileFailure("The local file changed while uploading.") }
+                let remote = try await file.readAttributes()
+                guard remote.size == UInt64(size) else { throw FileFailure("The server did not confirm the complete upload size.") }
+            }
+        }
+    }
+
     public func saveTextFile(_ document: SSHTextDocument, at path: String) async throws {
         let replacement = try document.replacement()
         try await files { sftp in

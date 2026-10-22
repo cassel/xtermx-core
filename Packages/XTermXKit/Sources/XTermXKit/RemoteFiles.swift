@@ -12,6 +12,7 @@ public struct SSHRemoteFile: Identifiable, Sendable, Equatable {
 
 public enum SSHFileRules {
     public static let transferLimit = 64 * 1024 * 1024
+    public static let uploadLimit = 1024 * 1024 * 1024
     public static func validName(_ name: String) -> Bool {
         !name.isEmpty && name != "." && name != ".." && name.utf8.count <= 255
             && !name.contains(where: { $0 == "/" || $0 == "\\" || $0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) })
@@ -29,6 +30,37 @@ public enum SSHFileRules {
     /// Citadel 0.9 does not check status for rename/remove; require visible postconditions too.
     public static func removed(_ name: String, names: [String]) -> Bool { !names.contains(name) }
     public static func renamed(_ old: String, to new: String, names: [String]) -> Bool { old != new && !names.contains(old) && names.contains(new) }
+
+    /// The folder a shell reported with OSC 7 (`file://host/path`, percent-encoded), or nil when it isn't an absolute path.
+    public static func directory(fromOSC7 payload: String) -> String? {
+        var text = Substring(payload)
+        if text.hasPrefix("7;") { text = text.dropFirst(2) }
+        let path: String
+        if text.hasPrefix("file://") {
+            let rest = text.dropFirst("file://".count)
+            guard let slash = rest.firstIndex(of: "/"), let decoded = String(rest[slash...]).removingPercentEncoding else { return nil }
+            path = decoded
+        } else {
+            guard !text.contains("://") else { return nil }
+            path = String(text)
+        }
+        guard path.hasPrefix("/"), !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return nil }
+        return path
+    }
+
+    /// `name`, or "name 2.ext", "name 3.ext"… when it is taken: a dropped file never replaces one already there.
+    public static func freeName(_ name: String, taken: Set<String>) -> String {
+        guard taken.contains(name) else { return name }
+        let ns = name as NSString
+        let ext = name.hasPrefix(".") && !name.dropFirst().contains(".") ? "" : ns.pathExtension
+        let base = ext.isEmpty ? name : ns.deletingPathExtension
+        var n = 2
+        while true {
+            let candidate = ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)"
+            if !taken.contains(candidate) { return candidate }
+            n += 1
+        }
+    }
 }
 
 private extension String {

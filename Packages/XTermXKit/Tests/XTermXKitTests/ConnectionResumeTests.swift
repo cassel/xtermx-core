@@ -29,6 +29,7 @@ private actor ResumeTransport: FrameTransport {
     }
     nonisolated func close() { base.close() }
     func holdSend() { holdNextSend = true }
+    func releaseSend() { blockedSend?.resume(); blockedSend = nil }
     func releaseSendWithError() { blockedSend?.resume(throwing: URLError(.networkConnectionLost)); blockedSend = nil }
     func silence() { discardIncoming = true }
     func slowDown() { delay = .milliseconds(20) }
@@ -201,5 +202,32 @@ private actor ResumeFactory {
         #expect(await factory.addresses == ["127.0.0.1"])
         #expect(client.status == .connected)
     }
+    @Test func navigationHasBackpressureAndExpiresWithoutReplayingAfterReconnect() async throws {
+        let manager = PaneManager(detectAgents: false)
+        let pane = manager.spawn(SpawnRequest(kind: .shell, cwd: NSTemporaryDirectory()))
+        let server = RemoteServer(manager: manager, port: 0, httpPort: 0, secretStore: MemorySecretStore(), bindHost: "127.0.0.1")
+        server.start(); defer { server.stop(); manager.close(pane.id) }
+        let factory = ResumeFactory()
+        let client = makeClient(server, factory: factory); defer { client.disconnect() }
+        client.connect(); #expect(await client.waitUntilReady())
+        #expect(await wait { client.panes.contains { $0.id == pane.id } })
+        let stream = try #require(await factory.streams.first)
+        await stream.holdSend(); client.refresh()
+        #expect(await wait { await stream.hasBlockedSend })
+        let held = Task { await client.navigationInput(paneID: pane.id, bytes: Data([27,91,65])) { true } }
+        try await Task.sleep(for: .milliseconds(50))
+        let extra = await client.navigationInput(paneID: pane.id, bytes: Data([27,91,66])) { true }
+        #expect(!extra)
+        try await Task.sleep(for: .milliseconds(150))
+        await stream.releaseSend()
+        #expect(await held.value == false) // Expired event was skipped rather than catching up.
+        client.disconnect(); client.connect(); #expect(await client.waitUntilReady())
+        #expect(await wait { client.panes.contains { $0.id == pane.id } })
+        #expect(await client.navigationInput(paneID: pane.id, bytes: Data([27,91,67])) { false } == false)
+        #expect(await client.reviewedInput(paneID: pane.id, bytes: Data("echo XTX_NAV_TEST\r".utf8)))
+        client.disconnect()
+        #expect(await client.navigationInput(paneID: pane.id, bytes: Data([27,91,68])) { true } == false)
+    }
+
 }
 #endif

@@ -79,13 +79,19 @@ public final class WSConnection: @unchecked Sendable {
         if alreadyClosed { handler() }
     }
 
-    public func send(_ data: Data) {
+    /// `written` runs once the frame has left for the socket, or failed to, so callers can pace what they send.
+    public func send(_ data: Data, written: (@Sendable () -> Void)? = nil) {
         let channel = self.channel
         let mask: WebSocketMaskingKey? = isClient ? .random() : nil
         channel.eventLoop.execute {
             var buffer = channel.allocator.buffer(capacity: data.count)
             buffer.writeBytes(data)
-            channel.writeAndFlush(WebSocketFrame(fin: true, opcode: .binary, maskKey: mask, data: buffer), promise: nil)
+            let promise = written.map { written in
+                let promise = channel.eventLoop.makePromise(of: Void.self)
+                promise.futureResult.whenComplete { _ in written() }
+                return promise
+            }
+            channel.writeAndFlush(WebSocketFrame(fin: true, opcode: .binary, maskKey: mask, data: buffer), promise: promise)
         }
     }
 

@@ -10,6 +10,9 @@ enum ScreenSnapshot {
         // A reconnect/re-fit can reuse a view that was in an alternate buffer or scroll region.
         // Clearing text alone leaves those modes active and moves the replay's prompt to another row.
         var out = "\u{1b}[?1047l\u{1b}[?6l\u{1b}[r\u{1b}[?69l\u{1b}[?7h\u{1b}[?1l\u{1b}[?2004l\u{1b}[0m\u{1b}[H\u{1b}[2J\u{1b}[3J"
+        // A reconnect must clear stale pointer modes before restoring the host's actual protocol.
+        // Otherwise a late mobile subscriber either cannot scroll tmux, or uses the wrong encoding.
+        out += "\u{1b}[?9;1000;1002;1003;1005;1006;1015;1016l\u{1b}[>0s"
         if t.isCurrentBufferAlternate { out += "\u{1b}[?1049h\u{1b}[H\u{1b}[2J" }
 
         var lines: [BufferLine] = []
@@ -50,6 +53,13 @@ enum ScreenSnapshot {
         out += "\u{1b}[\(cursor.y + 1);\(min(cursor.x, max(t.cols - 1, 0)) + 1)H"
         if t.applicationCursor { out += "\u{1b}[?1h" }
         if t.bracketedPasteMode { out += "\u{1b}[?2004h" }
+        let pointer = t.hostPointerModes
+        let tracking = [0, 9, 1000, 1002, 1003][Int(pointer & 7)]
+        let encoding = [0, 1005, 1006, 1015, 1016][Int((pointer >> 3) & 7)]
+        if tracking != 0 { out += "\u{1b}[?\(tracking)h" }
+        if encoding != 0 { out += "\u{1b}[?\(encoding)h" }
+        out += pointer & 128 != 0 ? "\u{1b}[?1007h" : "\u{1b}[?1007l"
+        if pointer & 64 != 0 { out += "\u{1b}[>1s" }
         return Data(out.utf8)
     }
 

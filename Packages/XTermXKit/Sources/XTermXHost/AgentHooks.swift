@@ -15,6 +15,10 @@ public final class AgentHooks {
     static let claudeTimeout: TimeInterval = 3600
     static let codexTimeout: TimeInterval = 90
 
+    /// Claude Code's cards still waiting, so an answer given in its own dialog can take them down: it keeps
+    /// the hook running after that answer instead of ending it.
+    private var waiting: [String: (paneID: String, tool: String, input: JSONValue)] = [:]
+
     public init(manager: PaneManager, sessions: AgentSessionTracker) {
         self.manager = manager
         self.sessions = sessions
@@ -53,6 +57,15 @@ public final class AgentHooks {
         case "Notification":
             if tool == .gemini, payload["notification_type"]?.string == "ToolPermission" { sessions.geminiActivity(paneID: paneID, status: .waiting) }
             return nil
+        case "PostToolUse":
+            // Allowed in the terminal: the tool ran, so its card is answered.
+            let name = payload["tool_name"]?.string, input = payload["tool_input"]
+            withdrawWaiting { $0.paneID == paneID && $0.tool == name && $0.input == input }
+            return nil
+        case "UserPromptSubmit", "Stop":
+            // Denied in the terminal: the turn ended or the person typed instead.
+            withdrawWaiting { $0.paneID == paneID }
+            return nil
         case "PermissionRequest":
             guard tool != .gemini else { return nil }
             return await permission(payload, tool: tool ?? .claude, paneID: paneID)
@@ -90,6 +103,8 @@ public final class AgentHooks {
         }
 
         sessions.permissionPending(paneID: paneID, requestID: request.id)
+        if tool == .claude { waiting[request.id] = (paneID, toolName, input) }
+        defer { waiting[request.id] = nil }
         let manager = self.manager
         // The agent may give up on the hook (the person answered in its own dialog): take the card down.
         let answer = await withTaskCancellationHandler {
@@ -100,6 +115,10 @@ public final class AgentHooks {
         sessions.permissionSettled(paneID: paneID, requestID: request.id)
         guard let answer else { return nil }
         return Self.decision(answer, request: request, tool: tool, input: input, suggestions: suggestions)
+    }
+
+    private func withdrawWaiting(_ matches: ((paneID: String, tool: String, input: JSONValue)) -> Bool) {
+        for (id, card) in waiting where matches(card) { manager.withdraw(id) }
     }
 
     /// The hook output for an answer, in the shape each agent expects.
