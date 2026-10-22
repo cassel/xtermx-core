@@ -5,9 +5,33 @@ public struct RemotePermissions: Codable, Sendable, Equatable {
     public var openSessions: Bool
     public var manageRooms: Bool
     public var sendFiles: Bool
+    /// Devices may preview servers listening in this host's panes. Off until the owner turns it on.
+    public var shareDevServers: Bool
+    /// Devices see the services this host checks and whether they are up. Off until the owner turns it on.
+    public var shareServices: Bool
+    /// Devices that opt in share the clipboard with this host (text only). Off until the owner turns it on.
+    /// A host that sends this as true also understands the clipboard messages.
+    public var shareClipboard: Bool
 
-    public init(openSessions: Bool = true, manageRooms: Bool = false, sendFiles: Bool = false) {
+    public init(openSessions: Bool = true, manageRooms: Bool = false, sendFiles: Bool = false, shareDevServers: Bool = false,
+                shareServices: Bool = false, shareClipboard: Bool = false) {
+        self.shareClipboard = shareClipboard
         self.openSessions = openSessions; self.manageRooms = manageRooms; self.sendFiles = sendFiles
+        self.shareDevServers = shareDevServers
+        self.shareServices = shareServices
+    }
+
+    private enum CodingKeys: String, CodingKey { case openSessions, manageRooms, sendFiles, shareDevServers, shareServices, shareClipboard }
+
+    /// Settings saved, or sent by a host, before a switch existed decode with that switch off.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        openSessions = try c.decode(Bool.self, forKey: .openSessions)
+        manageRooms = try c.decode(Bool.self, forKey: .manageRooms)
+        sendFiles = try c.decode(Bool.self, forKey: .sendFiles)
+        shareDevServers = try c.decodeIfPresent(Bool.self, forKey: .shareDevServers) ?? false
+        shareServices = try c.decodeIfPresent(Bool.self, forKey: .shareServices) ?? false
+        shareClipboard = try c.decodeIfPresent(Bool.self, forKey: .shareClipboard) ?? false
     }
 }
 

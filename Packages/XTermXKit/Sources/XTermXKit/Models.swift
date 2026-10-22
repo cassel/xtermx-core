@@ -26,6 +26,22 @@ public enum PaneState: String, Codable, Sendable {
     case exited
 }
 
+/// One command a shell ran, from its start and end marks.
+public struct CommandRun: Codable, Sendable, Hashable {
+    /// nil when the shell didn't say.
+    public var exitCode: Int32?
+    public var startedAt: Date
+    public var endedAt: Date
+
+    public init(exitCode: Int32?, startedAt: Date, endedAt: Date) {
+        self.exitCode = exitCode
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+    }
+
+    public var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
+}
+
 public struct PaneInfo: Codable, Sendable, Identifiable, Hashable {
     public var id: String
     public var title: String
@@ -55,6 +71,8 @@ public struct PaneInfo: Codable, Sendable, Identifiable, Hashable {
     public var needsYou: Bool
     /// The Claude Code or Codex session running here, from its hooks and transcript.
     public var agentSession: AgentSessionInfo?
+    /// The last command the shell reported finishing (OSC 133 marks), when the shell sends them.
+    public var lastCommand: CommandRun?
 
     public init(
         id: String = UUID().uuidString,
@@ -90,6 +108,7 @@ public struct PaneInfo: Codable, Sendable, Identifiable, Hashable {
         self.summaryAt = nil
         self.needsYou = false
         self.agentSession = nil
+        self.lastCommand = nil
     }
 
     /// The summary if it is still fresh (agents' summaries expire after 5 minutes).

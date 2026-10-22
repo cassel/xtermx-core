@@ -25,6 +25,14 @@ public struct SSHHost: Codable, Identifiable, Hashable, Sendable {
     public var startupCommand: String
     /// Nil inherits the app palette; optional for compatibility with existing saved hosts.
     public var themeID: String?
+    /// From `~/.ssh/config`; the key text itself is copied into the Keychain at import.
+    public var identityFile: String?
+    /// OpenSSH `ProxyJump`: saved host names or `[user@]host[:port]`, comma separated.
+    public var proxyJump: String?
+    /// The config file this host was imported from; re-imports match it by `name`.
+    public var importedFrom: String?
+    /// Imported without a usable secret; the user must add a key or password before connecting.
+    public var needsKey: Bool?
 
     public init(id: UUID = UUID(), name: String, host: String, port: Int = 22, username: String,
                 auth: Auth = .password, startupCommand: String = "", themeID: String? = nil) {
@@ -133,12 +141,14 @@ public final class SSHSession {
         case hostKeyChanged
         case noSecret
         case badKey
+        case hop(String, String)
 
         public var errorDescription: String? {
             switch self {
             case .hostKeyChanged: "The server's host key changed since the first connection. If you expected this, forget the key and connect again."
             case .noSecret: "No password or key saved for this host."
             case .badKey: "The private key is not an unencrypted OpenSSH Ed25519 key."
+            case .hop(let name, let reason): "Jump host \(name) failed: \(reason)"
             }
         }
     }
@@ -153,6 +163,13 @@ public final class SSHSession {
     public private(set) var newHostKey: String?
     @ObservationIgnored public let feed = TerminalFeed()
     @ObservationIgnored var client: SSHClient?
+    /// ProxyJump hops, outermost first; closed after the final client.
+    @ObservationIgnored private var jumpClients: [SSHClient] = []
+    @ObservationIgnored private let savedHosts: [SSHHost]
+    /// Local forwards (`ssh -L`) open on this connection; they close with it.
+    public internal(set) var forwards: [SSHLocalForward] = []
+    /// The remote shell's folder when it reports one (OSC 7); dropped files go there.
+    public private(set) var shellDirectory: String?
     @ObservationIgnored private var writer: TTYStdinWriter?
     @ObservationIgnored private var navigationBusy = false
     @ObservationIgnored var sftpOperationBusy = false
@@ -160,10 +177,15 @@ public final class SSHSession {
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var generation = UUID()
 
-    public init(host: SSHHost) {
+    /// `savedHosts` resolves ProxyJump names to saved destinations (and their Keychain secrets).
+    public init(host: SSHHost, savedHosts: [SSHHost]? = nil) {
         self.host = host
+        self.savedHosts = host.proxyJump == nil ? [] : (savedHosts ?? SSHHostStore.load())
         feed.onInput = { [weak self] data in self?.write(data) }
         feed.onResize = { [weak self] cols, rows in self?.resize(cols: cols, rows: rows) }
+        feed.onDirectory = { [weak self] payload in
+            if let path = SSHFileRules.directory(fromOSC7: payload) { self?.shellDirectory = path }
+        }
     }
 
     public func connect() {
@@ -192,9 +214,10 @@ public final class SSHSession {
         generation = UUID()
         task?.cancel()
         task = nil
-        let client = client
-        self.client = nil; writer = nil
-        Task { try? await client?.close() }
+        let client = client, jumps = jumpClients
+        stopForwards()
+        self.client = nil; writer = nil; jumpClients = []
+        Task { await Self.close(client, jumps) }
         status = .closed
     }
 
@@ -222,15 +245,72 @@ public final class SSHSession {
         }
     }
 
-    private func run(_ host: SSHHost, generation: UUID) async throws {
-        let secret = try checkedSecret(host)
+    /// ProxyJump hops in order. Saved host names win; other hops borrow the target's key. A password is
+    /// never borrowed: it would go to a different machine, so such a hop needs its own saved host.
+    public static func jumpChain(for host: SSHHost, saved: [SSHHost]) -> [SSHHost] {
+        guard let jump = host.proxyJump else { return [] }
+        return SSHConfig.jumpHops(jump).map { hop in
+            if hop.user == nil, hop.port == nil, var named = saved.first(where: { $0.name == hop.host && $0.id != host.id }) {
+                named.proxyJump = nil
+                return named
+            }
+            var borrowed = host
+            // A fresh id finds no secret in the Keychain, so connecting stops with "no secret" for this hop.
+            if host.auth == .password { borrowed.id = UUID() }
+            borrowed.name = hop.host
+            borrowed.host = hop.host
+            borrowed.port = hop.port ?? 22
+            borrowed.username = hop.user ?? host.username
+            borrowed.proxyJump = nil
+            return borrowed
+        }
+    }
+
+    private nonisolated static func close(_ client: SSHClient?, _ jumps: [SSHClient]) async {
+        try? await client?.close()
+        for jump in jumps.reversed() { try? await jump.close() }
+    }
+
+    private func settings(_ host: SSHHost, secret: String) -> SSHClientSettings {
         let validator = TOFUValidator(endpoint: "\(host.host):\(host.port)") { [weak self] key in
             Task { @MainActor in self?.newHostKey = key }
         }
-        let settings = SSHClientSettings(host: host.host, port: host.port, authenticationMethod: { Self.authentication(host, secret) },
-                                         hostKeyValidator: .custom(validator))
-        let client = try await SSHClient.connect(to: settings)
-        guard self.generation == generation, !Task.isCancelled else { try? await client.close(); return }
+        return SSHClientSettings(host: host.host, port: host.port, authenticationMethod: { Self.authentication(host, secret) },
+                                 hostKeyValidator: .custom(validator))
+    }
+
+    /// Connects through each ProxyJump hop with direct-tcpip; a failure names the hop.
+    private func open(_ host: SSHHost, generation: UUID) async throws -> SSHClient {
+        var jumps: [SSHClient] = []
+        for hop in Self.jumpChain(for: host, saved: savedHosts) {
+            do {
+                let hopSettings = settings(hop, secret: try checkedSecret(hop))
+                let next: SSHClient
+                if let previous = jumps.last { next = try await previous.jump(to: hopSettings) }
+                else { next = try await SSHClient.connect(to: hopSettings) }
+                jumps.append(next)
+            } catch {
+                await Self.close(nil, jumps)
+                throw Failure.hop("\(hop.name) (\(hop.host):\(hop.port))", error.localizedDescription)
+            }
+        }
+        let client: SSHClient
+        do {
+            let target = settings(host, secret: try checkedSecret(host))
+            if let previous = jumps.last { client = try await previous.jump(to: target) }
+            else { client = try await SSHClient.connect(to: target) }
+        } catch {
+            await Self.close(nil, jumps)
+            throw error
+        }
+        guard self.generation == generation, !Task.isCancelled else { await Self.close(client, jumps); throw CancellationError() }
+        jumpClients = jumps
+        return client
+    }
+
+    private func run(_ host: SSHHost, generation: UUID) async throws {
+        let client: SSHClient
+        do { client = try await open(host, generation: generation) } catch is CancellationError { return }
         self.client = client
         status = .connected
 
@@ -256,12 +336,18 @@ public final class SSHSession {
             }
         }
         } catch {
-            try? await client.close()
-            if self.generation == generation { self.client = nil; writer = nil }
+            await closeAfterRun(client, generation: generation)
             throw error
         }
-        try? await client.close()
-        if self.generation == generation { self.client = nil; writer = nil }
+        await closeAfterRun(client, generation: generation)
+    }
+
+    private func closeAfterRun(_ client: SSHClient, generation: UUID) async {
+        guard self.generation == generation else { try? await client.close(); return }
+        let jumps = jumpClients
+        self.client = nil; writer = nil; jumpClients = []
+        stopForwards()
+        await Self.close(client, jumps)
     }
 
     public func send(_ data: Data) { write(data) }

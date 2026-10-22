@@ -41,12 +41,15 @@ public struct WatchHostState: Codable, Sendable, Identifiable, Hashable {
     public var accounts: [AccountUsage]?
     /// Agent sessions on the host outside its panes, without their activity.
     public var elsewhere: [AgentSessionInfo]?
+    /// Services the host shares; nil from an older iPhone.
+    public var services: [ServiceStatus]?
 
     /// Agent sessions are trimmed to what the Watch shows: the Watch link carries little.
     public init(id: String, name: String, connected: Bool, panes: [PaneInfo], agents: [AgentDescriptor],
                 approvals: [ApprovalRequest], screens: [String: [String]], machine: MachineLoad?, accounts: [AccountUsage] = [],
-                elsewhere: [AgentSessionInfo] = []) {
+                elsewhere: [AgentSessionInfo] = [], services: [ServiceStatus] = []) {
         self.accounts = accounts
+        self.services = services
         self.elsewhere = elsewhere.map { $0.trimmed(activities: 0) }
         self.id = id
         self.name = name

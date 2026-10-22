@@ -126,7 +126,8 @@ public enum AgentHookInstaller {
     }
 
     static let geminiEvents: [(String, Int?)] = ["SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent", "AfterTool", "Notification"].map { ($0, 3000) }
-    static let claudeEvents: [(String, Int?)] = [("SessionStart", nil), ("SessionEnd", nil), ("PermissionRequest", 86_400)]
+    static let claudeEvents: [(String, Int?)] = [("SessionStart", nil), ("SessionEnd", nil), ("PermissionRequest", 86_400),
+                                                 ("PostToolUse", 5), ("UserPromptSubmit", 5), ("Stop", 5)]
     static let codexEvents: [(String, Int?)] = [("SessionStart", 10), ("SessionEnd", 3), ("PermissionRequest", 120),
                                                 ("SubagentStart", 10), ("SubagentStop", 10)]
 
@@ -242,7 +243,7 @@ public enum AgentHookInstaller {
             let file = folder + "/settings.json"
             var json = try read(file)
             var hooks = json["hooks"] as? [String: Any] ?? [:]
-            let hooksChanged = add(claudeEvents, to: &hooks, matcherFor: ["PermissionRequest"])
+            let hooksChanged = add(claudeEvents, to: &hooks, matcherFor: ["PermissionRequest", "PostToolUse"])
             json["hooks"] = hooks
             let statusChanged = try changeStatusLine(&json, folder: folder, enabled: manageStatusLine, store: &store)
             if hooksChanged || statusChanged {

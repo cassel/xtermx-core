@@ -202,6 +202,46 @@ extension AgentSessionInfo {
     }
 }
 
+/// One service the host checks: a colored dot, its name and the last result.
+public struct ServiceStatusLine: View {
+    let status: ServiceStatus
+    let compact: Bool
+
+    public init(_ status: ServiceStatus, compact: Bool = false) {
+        self.status = status
+        self.compact = compact
+    }
+
+    private var color: Color {
+        switch status.health {
+        case .up: .green
+        case .degraded: .orange
+        case .down: .red
+        case .unknown: .secondary
+        }
+    }
+
+    private var detail: String {
+        switch status.health {
+        case .up: status.latencyMilliseconds.map { "\(Int($0)) ms" } ?? "Up"
+        case .degraded: status.lastError ?? "Degraded"
+        case .down: status.lastError ?? "Down"
+        case .unknown: "Not checked yet"
+        }
+    }
+
+    public var body: some View {
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: compact ? 6 : 8, height: compact ? 6 : 8)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(status.name).font(compact ? .system(size: 13, weight: .semibold) : .body).lineLimit(1)
+                Text(detail).font(.caption2).foregroundStyle(status.health == .up ? .secondary : color).lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// An account's plan limits as two bars: the 5-hour session and the week.
 public struct AccountUsageView: View {
     let account: AccountUsage

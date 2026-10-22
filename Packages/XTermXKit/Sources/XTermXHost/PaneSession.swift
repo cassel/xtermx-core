@@ -20,11 +20,17 @@ public final class PaneSession {
     private let screenDelegate = HeadlessDelegate()
     private var replay = Data()
     private var stateTimer: Timer?
+    private var promptMarks = SemanticPromptTracker()
 
     public init(info: PaneInfo, shell: String, environment: [String], initialInput: String?) {
         self.info = info
         self.screen = Terminal(delegate: screenDelegate, options: TerminalOptions(cols: info.cols, rows: info.rows, scrollback: 2000))
         screenDelegate.onTitle = { [weak self] title in self?.titleChanged(title) }
+        // Shells with prompt marks (OSC 133) say when a command starts and ends, and with what code.
+        screen.registerOscHandler(code: 133) { [weak self] data in
+            let mark = String(decoding: data, as: UTF8.self)
+            MainActor.assumeIsolated { self?.promptMarked(mark) }
+        }
         self.process = LocalProcess(delegate: self, dispatchQueue: .main)
 
         Self.closeInheritedDescriptors()
@@ -151,6 +157,12 @@ public final class PaneSession {
         info.lastLine = screenLines(1).first ?? ""
         onChange?(info)
         onExit?(info)
+    }
+
+    private func promptMarked(_ mark: String) {
+        guard let run = promptMarks.handle(mark) else { return }
+        info.lastCommand = run
+        DispatchQueue.main.async { [weak self] in if let self { self.onChange?(self.info) } }
     }
 
     private func titleChanged(_ title: String) {

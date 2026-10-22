@@ -70,6 +70,10 @@ struct RemoteAccessSettings: View {
                     }
                 }
             }
+            SettingsCard("Wake from iPhone", "Pairing codes include this Mac's network address so iPhone can wake it on the same network.") {
+                Text("Turn on \u{201C}Wake for network access\u{201D} in System Settings \u{203A} Energy (Battery \u{203A} Options on laptops). Pair again to add Wake to older pairings.")
+                    .font(.caption).foregroundStyle(theme.chrome.mutedForeground.color)
+            }
             PairingPasswordSettings()
             if tailscaleInstalled || addresses.contains(where: HostIdentity.isTailscaleAddress) {
                 SettingsCard("Beyond your Wi-Fi", "Tailscale can give your devices a private route back to this Mac.") {
@@ -112,6 +116,18 @@ struct RemoteAccessSettings: View {
                                                                    set: { model.server.permissions.sendFiles = $0 }))
                     .toggleStyle(.switch)
                 Text("Attachment limits are configured below. Older Rooms & files uploads: up to 4 MB.").font(.caption)
+                Toggle("Share dev servers with my devices", isOn: Binding(get: { model.server.permissions.shareDevServers },
+                                                                          set: { model.server.permissions.shareDevServers = $0 }))
+                    .toggleStyle(.switch)
+                Text("Paired devices can preview servers listening in panes they may view, through this connection only.").font(.caption)
+                Toggle("Show services on my devices", isOn: Binding(get: { model.server.permissions.shareServices },
+                                                                     set: { model.server.permissions.shareServices = $0 }))
+                    .toggleStyle(.switch)
+                Text("Names, addresses and whether each service in Settings › Services is up.").font(.caption)
+                Toggle("Share the clipboard with my devices", isOn: Binding(get: { model.server.permissions.shareClipboard },
+                                                                             set: { model.server.permissions.shareClipboard = $0 }))
+                    .toggleStyle(.switch)
+                Text("Text only, up to 256 KB, and only with devices that also turn it on. Passwords copied from a password manager stay here.").font(.caption)
                 Button("Show received files") {
                     let url = model.server.receivedFiles.directory
                     do {

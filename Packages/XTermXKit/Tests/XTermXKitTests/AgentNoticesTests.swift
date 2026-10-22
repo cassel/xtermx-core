@@ -174,6 +174,217 @@ import Testing
         #expect(throws: NoticeChannelError.self) { try TelegramBot.checkSent(Data("<html>".utf8)) }
     }
 
+    // MARK: Commands (E19.1)
+
+    func shellPane(_ run: CommandRun?, kind: PaneKind = .shell) -> PaneInfo {
+        var p = PaneInfo(id: "c1", title: "make", kind: kind, cwd: home + "/app/web", state: .idle)
+        p.lastLine = "error: build failed"
+        p.lastCommand = run
+        return p
+    }
+
+    func run(_ code: Int32?, ran seconds: TimeInterval, endingAt end: Date = Date(timeIntervalSince1970: 5000)) -> CommandRun {
+        CommandRun(exitCode: code, startedAt: end.addingTimeInterval(-seconds), endedAt: end)
+    }
+
+    @Test func aQuickFailureSaysNothing() {
+        var w = AgentNoticeWatcher()
+        #expect(w.paneUpdated(shellPane(run(1, ran: 0.2))).isEmpty)
+    }
+
+    @Test func aLongCommandThatFailsIsTold() {
+        var w = AgentNoticeWatcher()
+        let out = w.paneUpdated(shellPane(run(1, ran: 40)))
+        #expect(out.count == 1)
+        #expect(out.first?.event == .commandFailed)
+        #expect(out.first?.paneID == "c1")
+        #expect(out.first?.title == "make failed · exit 1")
+        #expect(out.first?.body == "error: build failed\n~/app/web · ran 40 s")
+        // Told once: the same run reported again says nothing; the next long one is told.
+        #expect(w.paneUpdated(shellPane(run(1, ran: 40))).isEmpty)
+        #expect(w.paneUpdated(shellPane(run(1, ran: 50, endingAt: Date(timeIntervalSince1970: 6000)))).count == 1)
+    }
+
+    @Test func aLongCommandThatSucceedsIsABuildFinished() {
+        var w = AgentNoticeWatcher()
+        let out = w.paneUpdated(shellPane(run(0, ran: 30)))
+        #expect(out.map(\.event) == [.buildFinished])
+        #expect(out.first?.title == "make finished")
+        var fresh = AgentNoticeWatcher()
+        #expect(fresh.paneUpdated(shellPane(run(0, ran: 29.9))).isEmpty)
+        // No exit status in the mark: finished, not failed.
+        #expect(fresh.paneUpdated(shellPane(run(nil, ran: 60, endingAt: Date(timeIntervalSince1970: 7000)))).map(\.event) == [.buildFinished])
+    }
+
+    @Test func agentPanesDontCountAsCommands() {
+        var w = AgentNoticeWatcher()
+        #expect(w.paneUpdated(shellPane(run(1, ran: 60), kind: .agent)).isEmpty)
+    }
+
+    @Test func aPaneWhoseShellExitsWithAnErrorIsAFailure() {
+        var w = AgentNoticeWatcher()
+        let now = Date(timeIntervalSince1970: 5000)
+        var p = PaneInfo(id: "c2", title: "deploy", kind: .ssh, cwd: home, state: .exited,
+                         createdAt: now.addingTimeInterval(-45), exitCode: 255)
+        #expect(w.paneUpdated(p, now: now).first?.title == "deploy failed · exit 255")
+        #expect(w.paneUpdated(p, now: now).isEmpty)
+        // Closing a shell cleanly, however long it was open, isn't news.
+        p.id = "c3"
+        p.exitCode = 0
+        #expect(w.paneUpdated(p, now: now).isEmpty)
+        p.id = "c4"
+        p.exitCode = 1
+        p.createdAt = now.addingTimeInterval(-2)
+        #expect(w.paneUpdated(p, now: now).isEmpty)
+    }
+
+    @Test func semanticPromptMarksMakeCommandRuns() {
+        var marks = SemanticPromptTracker()
+        let t0 = Date(timeIntervalSince1970: 100)
+        // A prompt redrawn without a command in between is no run.
+        #expect(marks.handle("A", now: t0) == nil)
+        #expect(marks.handle("D", now: t0) == nil)
+        #expect(marks.handle("C", now: t0) == nil)
+        #expect(marks.handle("D;1", now: t0.addingTimeInterval(40)) == CommandRun(exitCode: 1, startedAt: t0, endedAt: t0.addingTimeInterval(40)))
+        #expect(marks.handle("D;0", now: t0.addingTimeInterval(41)) == nil)
+        #expect(marks.handle("C;cmdline=make", now: t0.addingTimeInterval(50)) == nil)
+        #expect(marks.handle("D;0;aid=7", now: t0.addingTimeInterval(52))?.exitCode == 0)
+        #expect(marks.handle("C", now: t0) == nil)
+        #expect(marks.handle("D", now: t0.addingTimeInterval(1))?.exitCode == nil)
+    }
+
+    // MARK: Webhook (E19.2)
+
+    @Test func webhookAddressAndHeader() {
+        #expect(GenericWebhook("https://example.com/hook") != nil)
+        #expect(GenericWebhook("http://192.168.1.4:8080/n") != nil)
+        #expect(GenericWebhook("ftp://example.com") == nil)
+        #expect(GenericWebhook("not a url") == nil)
+        #expect(GenericWebhook("https://example.com/hook", header: "Authorization: Bearer abc")?.header?.name == "Authorization")
+        #expect(GenericWebhook("https://example.com/hook", header: "Authorization: Bearer abc")?.header?.value == "Bearer abc")
+        #expect(GenericWebhook("https://example.com/hook", header: "  ")?.header == nil)
+        #expect(GenericWebhook("https://example.com/hook", header: "no colon") == nil)
+        #expect(GenericWebhook("https://example.com/hook", header: ": value") == nil)
+    }
+
+    @Test func webhookPostsTheNoticeAsJSON() throws {
+        let hook = try #require(GenericWebhook("https://example.com/hook", header: "X-Key: s3cret"))
+        let notice = AgentNotice(event: .commandFailed, paneID: "p9", title: "make failed · exit 1", body: "~/app")
+        let r = hook.post(notice, host: "studio", time: Date(timeIntervalSince1970: 0))
+        #expect(r.httpMethod == "POST")
+        #expect(r.url == hook.url)
+        #expect(r.timeoutInterval == 10)
+        #expect(r.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(r.value(forHTTPHeaderField: "X-Key") == "s3cret")
+        let body = try #require(r.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        #expect(Set(body.keys) == ["event", "title", "body", "paneID", "host", "time"])
+        #expect(body["event"] as? String == "commandFailed")
+        #expect(body["title"] as? String == "make failed · exit 1")
+        #expect(body["body"] as? String == "~/app")
+        #expect(body["paneID"] as? String == "p9")
+        #expect(body["host"] as? String == "studio")
+        #expect(body["time"] as? String == "1970-01-01T00:00:00Z")
+        // No pane: null, still there.
+        let plan = hook.post(AgentNotice(event: .planLimit, paneID: nil, title: "t", body: ""), host: "h", time: .now)
+        let planBody = try #require(plan.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        #expect(planBody["paneID"] is NSNull)
+    }
+
+    @Test func deliveryTriesOnceMore() async {
+        actor Count { var n = 0; func bump() -> Int { n += 1; return n } }
+        let flaky = Count()
+        let data = try? await NoticeDelivery.retrying(once: true, pause: .zero) {
+            if await flaky.bump() == 1 { throw NoticeChannelError.network("No answer in time. Try again.") }
+            return Data("ok".utf8)
+        }
+        #expect(data == Data("ok".utf8))
+        #expect(await flaky.n == 2)
+
+        let broken = Count()
+        await #expect(throws: NoticeChannelError.network("down")) {
+            try await NoticeDelivery.retrying(once: true, pause: .zero) {
+                _ = await broken.bump()
+                throw NoticeChannelError.network("down")
+            }
+        }
+        #expect(await broken.n == 2)
+    }
+
+    // MARK: ntfy (E19.3)
+
+    @Test func ntfyServerAndTopic() {
+        #expect(NtfyTopic(server: "", topic: "xtermx-alerts")?.url.absoluteString == "https://ntfy.sh/xtermx-alerts")
+        #expect(NtfyTopic(server: "https://ntfy.example.com/", topic: "a_b")?.url.absoluteString == "https://ntfy.example.com/a_b")
+        #expect(NtfyTopic(server: "ntfy.example.com", topic: "t")?.url.absoluteString == "https://ntfy.example.com/t")
+        #expect(NtfyTopic(server: "", topic: "") == nil)
+        #expect(NtfyTopic(server: "", topic: "has space") == nil)
+        #expect(NtfyTopic(server: "", topic: "a/b") == nil)
+        #expect(NtfyTopic(server: "ftp://x", topic: "t") == nil)
+    }
+
+    @Test func ntfyHeaders() throws {
+        let topic = try #require(NtfyTopic(server: "", topic: "mine", token: "tk_123"))
+        let failed = topic.post(AgentNotice(event: .commandFailed, paneID: "p", title: "make failed · exit 1", body: "~/app · ran 40 s"))
+        #expect(failed.httpMethod == "POST")
+        #expect(failed.timeoutInterval == 10)
+        #expect(failed.url?.absoluteString == "https://ntfy.sh/mine")
+        #expect(failed.value(forHTTPHeaderField: "Authorization") == "Bearer tk_123")
+        #expect(failed.value(forHTTPHeaderField: "Priority") == "high")
+        #expect(failed.value(forHTTPHeaderField: "Tags") == "x")
+        // Headers are ASCII: anything else goes RFC 2047 encoded, which ntfy reads.
+        #expect(failed.value(forHTTPHeaderField: "Title") == "=?UTF-8?B?" + Data("make failed · exit 1".utf8).base64EncodedString() + "?=")
+        #expect(failed.httpBody == Data("~/app · ran 40 s".utf8))
+
+        let plain = try #require(NtfyTopic(server: "", topic: "mine"))
+        let done = plain.post(AgentNotice(event: .finished, paneID: nil, title: "Codex is done", body: ""))
+        #expect(done.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(done.value(forHTTPHeaderField: "Title") == "Codex is done")
+        #expect(done.value(forHTTPHeaderField: "Priority") == "default")
+        #expect(done.value(forHTTPHeaderField: "Tags") == "white_check_mark")
+        #expect(done.httpBody == Data("Codex is done".utf8))
+        #expect(plain.post(AgentNotice(event: .needsYou, paneID: nil, title: "t", body: "b")).value(forHTTPHeaderField: "Priority") == "high")
+    }
+
+    // MARK: Channel × event (E19.4)
+
+    @Test func newEventsStartOffOutsideTheMac() {
+        let m = NoticeMatrix()
+        for event in [AgentNoticeEvent.finished, .needsYou, .planLimit] {
+            for channel in ["mac", "telegram", "slack", "webhook", "ntfy"] { #expect(m.wants(channel, event)) }
+        }
+        #expect(m.wants("mac", .commandFailed))
+        #expect(m.wants("mac", .buildFinished))
+        for channel in ["telegram", "slack", "webhook", "ntfy"] {
+            #expect(!m.wants(channel, .commandFailed))
+            #expect(!m.wants(channel, .buildFinished))
+        }
+    }
+
+    @Test func choicesStickAndFilterTheChannels() {
+        var m = NoticeMatrix()
+        m.set("slack", .commandFailed, true)
+        m.set("mac", .planLimit, false)
+        #expect(m.wants("slack", .commandFailed))
+        #expect(!m.wants("mac", .planLimit))
+        #expect(m.channels(for: .commandFailed, among: ["mac", "telegram", "slack"]) == ["mac", "slack"])
+        #expect(m.channels(for: .planLimit, among: ["mac", "telegram"]) == ["telegram"])
+        // Kept as explicit choices, so a later change of defaults doesn't flip them.
+        #expect(NoticeMatrix(choices: m.choices) == m)
+        #expect(m.choices == ["slack.commandFailed": true, "mac.planLimit": false])
+    }
+
+    @Test func migratesTheOldMutedList() {
+        // E4.4 kept the pairs turned off; everything else was on.
+        let m = NoticeMatrix.migrating(muted: ["telegram.finished", "mac.needsYou", "junk"])
+        #expect(!m.wants("telegram", .finished))
+        #expect(!m.wants("mac", .needsYou))
+        #expect(m.wants("telegram", .needsYou))
+        #expect(m.wants("slack", .planLimit))
+        #expect(!m.wants("telegram", .commandFailed))
+        #expect(m.choices == ["telegram.finished": false, "mac.needsYou": false])
+        #expect(NoticeMatrix.migrating(muted: []) == NoticeMatrix())
+    }
+
     // MARK: Slack
 
     @Test func slackWebhookAddress() {

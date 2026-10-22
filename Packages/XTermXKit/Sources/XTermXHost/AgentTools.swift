@@ -134,6 +134,10 @@ public final class AgentTools {
                 "text": str("Max 160 characters."), "needsYou": ["type": "boolean"],
             ], required: ["text"]),
             tool("watch_status", "Whether the person is following along on their iPhone or Apple Watch right now."),
+            tool("network_diagnostics", "This Mac's network: interface, Wi-Fi name, router, DNS servers, TCP connect times to the router, DNS servers and the internet, timed name lookups, and a verdict: ok, slow, dns_failing or offline. Takes a few seconds."),
+            tool("port_holders", "Which processes listen on a TCP port of this Mac (read-only; never ends them).", [
+                "port": int("TCP port, 1 to 65535."),
+            ], required: ["port"]),
         ]
     }
 
@@ -167,6 +171,10 @@ public final class AgentTools {
                                  "reason": "XTermX does not read plan usage yet. Treat unknown as careful, never as go."])
             case "watch_summary": return .success(try watchSummary(arguments, caller: caller))
             case "watch_status": return .success(watchStatus())
+            case "network_diagnostics": return .success(.encoding(await NetworkDiagnostics.run()))
+            case "port_holders":
+                guard let raw = arguments["port"]?.int, raw >= 1, raw <= 65535 else { throw Failure("BAD_PORT", "port must be 1 to 65535.") }
+                return .success(["port": .number(Double(raw)), "holders": .encoding(await PortHolders.listeners(on: UInt16(raw)))])
             default: throw Failure("UNKNOWN_TOOL", "No tool named \(rawName).")
             }
         } catch let f as Failure {

@@ -20,6 +20,13 @@ public final class TerminalFeed {
     public var onViewAttached: (() -> Void)?
     #endif
     public var onTitle: ((String) -> Void)?
+    /// A program asked to copy text (OSC 52) and the person allows that; nil puts it on the local clipboard.
+    /// Mac and iPhone set it to pass the text on to the shared clipboard as well.
+    public var onProgramCopy: ((String) -> Void)?
+    /// A shell on this machine (tmux, vim, agents copying): its programs may set the clipboard without the setting.
+    public var isLocalPane = false
+    /// The shell reported its folder (OSC 7), as SwiftTerm passes it on.
+    public var onDirectory: ((String) -> Void)?
     /// The person pinched the text to a new size.
     public var onFontSize: ((CGFloat) -> Void)?
     /// Two fingers swiped across the text: +1 for the next pane (to the left), -1 for the previous.
@@ -231,7 +238,9 @@ public struct TerminalSurface {
         public func setTerminalTitle(source: TerminalView, title: String) {
             MainActor.assumeIsolated { feed.onTitle?(title) }
         }
-        public func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+        public func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+            if let directory { feed.onDirectory?(directory) }
+        }
         public func send(source: TerminalView, data: ArraySlice<UInt8>) {
             MainActor.assumeIsolated {
                 #if os(iOS)
@@ -253,7 +262,9 @@ public struct TerminalSurface {
         }
         public func bell(source: TerminalView) {}
         public func clipboardCopy(source: TerminalView, content: Data) {
-            let text = String(decoding: content, as: UTF8.self)
+            // Local panes always may; elsewhere off unless allowed: a program on a remote machine could write here.
+            guard feed.isLocalPane || ProgramClipboard.isAllowed(), let text = ProgramClipboard.text(content) else { return }
+            if let handler = feed.onProgramCopy { handler(text); return }
             #if os(macOS)
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)

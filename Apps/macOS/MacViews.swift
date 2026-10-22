@@ -67,15 +67,10 @@ struct MainWindow: View {
             if model.switcher != nil { QuickSwitcher() }
         }
         .overlay(alignment: .topTrailing) {
-            // Approval cards float over everything: an agent is waiting, and silence is a no.
-            if !model.manager.approvals.isEmpty || !model.server.spawnGate.approvals.isEmpty {
+            // A device asking to open a pane floats over everything. Agents' cards live in the sidebar's Needs you.
+            if !model.server.spawnGate.approvals.isEmpty {
                 VStack(spacing: 8) {
                     ForEach(model.server.spawnGate.approvals) { approval in RemoteSpawnCard(approval: approval) }
-                    ForEach(model.manager.approvals) { req in
-                        ApprovalCard(req) { model.manager.respond(req.id, $0) }
-                            .background(theme.chrome.popover.color, in: RoundedRectangle(cornerRadius: 8))
-                            .shadow(color: .black.opacity(0.45), radius: 14, y: 6)
-                    }
                 }
                 .frame(width: 340)
                 .padding(.top, 46).padding(.trailing, 12)
@@ -107,6 +102,7 @@ struct TitleBar: View {
             }
             Spacer(minLength: 8)
             UsageMeters()
+            ServicesChip()
             AppMemoryBadge()
             if model.pendingLaunches > 0 { ProgressView().controlSize(.mini).help("Preparing terminals") }
             let counts = AgentCounts(panes: model.manager.panes, elsewhere: model.manager.overview.elsewhere)
@@ -487,6 +483,7 @@ struct PaneView: View {
                     PaneChatView(paneID: paneID, session: chat, focused: focused)
                 }
             }
+            .modifier(SSHDropTarget(session: model.sshSessions[paneID]))
             .simultaneousGesture(TapGesture().onEnded {
                 binder.reclaim(paneID: paneID, model: model)
                 model.focus(paneID)
@@ -572,6 +569,7 @@ final class PaneFeedBinder {
         }
         guard listener == nil, remote == nil else { return }
         boundPaneID = paneID
+        feed.isLocalPane = false
         // SwiftUI can replace the AppKit view while retaining this binder when a pane moves.
         // Its replacement needs a screen even if the program is idle and its size is unchanged.
         feed.onViewAttached = { [weak self, weak model] in
@@ -603,6 +601,7 @@ final class PaneFeedBinder {
             remote = (connection, leaf.pane, token)
             return
         }
+        feed.isLocalPane = true
         // UIKit/AppKit can finish its first layout before SwiftUI calls onAppear.
         size = feed.size
         if let size { model.manager.setHomeSize(paneID, cols: size.cols, rows: size.rows) }
@@ -717,7 +716,21 @@ struct PaneHeader: View {
     @State private var renaming = false
     @State private var name = ""
 
+    @State private var forwarding = false
+    @State private var forwardPort = ""
+    @State private var forwardError: String?
+
     private func editName() { name = pane.customName ?? ""; renaming = true }
+
+    private func addForward() {
+        guard let ssh = model.sshSessions[leafID], let port = Int(forwardPort) else { return }
+        Task {
+            do {
+                let forward = try await ssh.addLocalForward(remotePort: port)
+                if let url = forward.localURL { NSWorkspace.shared.open(url) }
+            } catch { forwardError = error.localizedDescription }
+        }
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -752,6 +765,27 @@ struct PaneHeader: View {
                     .padding(.horizontal, 5).padding(.vertical, 1)
                     .background(pane.state.color.opacity(0.18), in: Capsule())
                     .foregroundStyle(pane.state.color)
+            }
+            if model.remoteLeaves[leafID] == nil, model.sshSessions[leafID] == nil {
+                ForEach(model.server.devServers.ports(for: pane.id)) { server in
+                    DevServerChip(title: server.label, url: server.localURL,
+                                  help: "\(server.process ?? "A program") listens on port \(server.port)"
+                                      + (model.server.permissions.shareDevServers ? ". Paired devices can preview it." : "."))
+                }
+            }
+            if let ssh = model.sshSessions[leafID] {
+                ForEach(ssh.forwards) { forward in
+                    if let url = forward.localURL {
+                        DevServerChip(title: forward.label, url: url,
+                                      help: "Port \(forward.remotePort) on \(ssh.host.host), forwarded to 127.0.0.1:\(forward.localPort)") {
+                            ssh.removeLocalForward(forward)
+                        }
+                    }
+                }
+                if ssh.status == .connected {
+                    Button { forwardPort = ""; forwarding = true } label: { Image(systemName: "point.3.connected.trianglepath.dotted") }
+                        .buttonStyle(.plain).accessibilityLabel("Forward a port…").help("Forward a port from the server (ssh -L)")
+                }
             }
             Spacer(minLength: 4)
             if model.dictation.session.paneID == leafID {
@@ -810,6 +844,14 @@ struct PaneHeader: View {
             Button("Use automatic name") { model.renamePane(leafID, to: "") }
             Button("Cancel", role: .cancel) {}
         } message: { Text("Shown on Mac, iPhone and Watch. Up to 60 characters.") }
+        .alert("Forward a port", isPresented: $forwarding) {
+            TextField("Port on the server", text: $forwardPort)
+            Button("Forward") { addForward() }.disabled(Int(forwardPort).map { !(1...65_535).contains($0) } ?? true)
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Opens 127.0.0.1 on this Mac to a port on the server's localhost, like ssh -L.") }
+        .alert("Could not forward the port", isPresented: Binding(get: { forwardError != nil }, set: { if !$0 { forwardError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(forwardError ?? "") }
         .contextMenu {
             Button("Rename pane…", action: editName).disabled(!model.canRenamePane(leafID))
             Divider()
@@ -826,6 +868,38 @@ struct PaneHeader: View {
             Divider()
             Button("Close", role: .destructive) { model.closePane(leafID) }
         }
+    }
+}
+
+/// A server listening in a pane, or a port forwarded over SSH: click to open it in the browser.
+struct DevServerChip: View {
+    let title: String
+    let url: URL
+    let help: String
+    var onRemove: (() -> Void)? = nil
+
+    var body: some View {
+        Menu {
+            Button("Open in Browser") { NSWorkspace.shared.open(url) }
+            Button("Copy URL") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url.absoluteString, forType: .string)
+            }
+            if let onRemove {
+                Divider()
+                Button("Stop Forwarding", role: .destructive, action: onRemove)
+            }
+        } label: {
+            Label("\(title) open", systemImage: "globe").font(.system(size: 9, weight: .semibold))
+        } primaryAction: {
+            NSWorkspace.shared.open(url)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .padding(.horizontal, 5).padding(.vertical, 1)
+        .background(Color.green.opacity(0.18), in: Capsule())
+        .foregroundStyle(Color.green)
+        .help(help)
+        .accessibilityLabel("Open \(title) in browser")
     }
 }
 
@@ -860,6 +934,7 @@ struct RightPanel: View {
             case .controlRoom: ControlRoomView()
             case .agents: AgentActivityView()
             case .devices: ScrollView { DevicesView().padding(12) }
+            case .network: ScrollView { NetworkPanelView().padding(12) }
             }
         }
         .background(theme.chrome.background.color)
@@ -969,6 +1044,7 @@ struct DevicesView: View {
                 .toggleStyle(.switch)
             if let error = model.server.lastError {
                 Text(error).font(.system(size: 11)).foregroundStyle(theme.chrome.destructive.color)
+                if PortHolders.isAddressInUse(error), !model.server.isRunning { PortConflictView() }
             }
             if model.server.isRunning {
                 if !addresses.isEmpty {

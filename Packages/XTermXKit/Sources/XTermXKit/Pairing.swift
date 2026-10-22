@@ -24,6 +24,13 @@ public struct PairingInfo: Codable, Sendable, Hashable, Identifiable {
     public var httpPort: UInt16
     /// 32 random bytes; the shared secret every frame key is derived from.
     public var secret: Data
+    /// MAC address of the host's primary interface, for Wake-on-LAN. Absent in older pairings.
+    public var wakeMAC: String?
+    /// Subnet broadcast address to send the wake packet to.
+    public var wakeBroadcast: String?
+
+    /// Whether this pairing carries what Wake-on-LAN needs.
+    public var canWake: Bool { wakeMAC.flatMap(WakeOnLAN.parseMAC) != nil }
 
     public init(hostName: String, address: String, alternates: [String] = [], port: UInt16 = XTermXProtocol.defaultPort,
                 httpPort: UInt16 = XTermXProtocol.defaultHTTPPort, secret: Data) {
@@ -50,11 +57,11 @@ public struct PairingInfo: Codable, Sendable, Hashable, Identifiable {
             URLQueryItem(name: "p", value: String(port)),
             URLQueryItem(name: "w", value: String(httpPort)),
             URLQueryItem(name: "k", value: secret.base64URLEncoded),
-        ]
+        ] + [wakeMAC.map { URLQueryItem(name: "m", value: $0) }, wakeBroadcast.map { URLQueryItem(name: "b", value: $0) }].compactMap { $0 }
         return c.url!
     }
 
-    private enum CodingKeys: String, CodingKey { case hostName, address, alternates, port, httpPort, secret }
+    private enum CodingKeys: String, CodingKey { case hostName, address, alternates, port, httpPort, secret, wakeMAC, wakeBroadcast }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -64,6 +71,8 @@ public struct PairingInfo: Codable, Sendable, Hashable, Identifiable {
         port = try c.decode(UInt16.self, forKey: .port)
         httpPort = try c.decode(UInt16.self, forKey: .httpPort)
         secret = try c.decode(Data.self, forKey: .secret)
+        wakeMAC = try c.decodeIfPresent(String.self, forKey: .wakeMAC)
+        wakeBroadcast = try c.decodeIfPresent(String.self, forKey: .wakeBroadcast)
     }
 
     public init?(url: URL) {
@@ -79,6 +88,8 @@ public struct PairingInfo: Codable, Sendable, Hashable, Identifiable {
             httpPort: v("w").flatMap(UInt16.init) ?? XTermXProtocol.defaultHTTPPort,
             secret: key
         )
+        wakeMAC = v("m").flatMap { WakeOnLAN.parseMAC($0) != nil ? $0 : nil }
+        wakeBroadcast = v("b").flatMap { WakeOnLAN.ipv4($0) == nil ? nil : $0 }
     }
 }
 

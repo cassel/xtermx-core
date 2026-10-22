@@ -3,7 +3,7 @@ import XTermXKit
 
 /// One page of the Settings window, in sidebar order.
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, notifications
+    case general, notifications, services
     case agents, usage
     case remoteAccess, sharing
     case theme, terminal, shortcuts
@@ -25,6 +25,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: "General"
         case .notifications: "Notifications"
+        case .services: "Services"
         case .agents: "Agents"
         case .usage: "Usage"
         case .remoteAccess: "Remote access"
@@ -43,6 +44,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: "Startup and everyday behavior."
         case .notifications: "Get a heads-up when an agent is done or stuck."
+        case .services: "Web addresses and ports this Mac checks."
         case .agents: "Which agents are here and what they're allowed to do."
         case .usage: "How much of each plan your sessions have used."
         case .remoteAccess: "Drive this Mac from your iPhone and Apple Watch."
@@ -61,6 +63,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: "slider.horizontal.3"
         case .notifications: "bell.badge"
+        case .services: "heart.text.square"
         case .agents: "wand.and.stars"
         case .usage: "chart.pie"
         case .remoteAccess: "iphone.radiowaves.left.and.right"
@@ -80,6 +83,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: StateColors.exited.color
         case .notifications: theme.chrome.destructive.color
+        case .services: StateColors.done.color
         case .agents: .purple
         case .usage: theme.chrome.activity.color
         case .remoteAccess: theme.chrome.primary.color
@@ -100,7 +104,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: ["Interface language", "Your language", "Ready when you sign in", "Open at login", "Open Login Items", "Memory at a glance", "Show process memory in the title bar", "Received files", "Keep received files", "Remove expired files now"]
         case .notifications: ["Where each notice goes", "Done", "Needs you", "Plan limit", "Show notifications on this Mac",
-                              "Telegram", "Bot token", "BotFather", "Find my chat", "Send test", "Slack", "Webhook"]
+                              "Telegram", "Bot token", "BotFather", "Find my chat", "Send test", "Slack", "Webhook", "Service down"]
+        case .services: ["Services", "Add service", "Check every", "Check now", "Address", "Name"]
         case .agents: ["Installed agents", "Check again", "Let agents open panes", "Tool server", "MCP", "Separate agent branches", "Isolate agents in Git worktrees", "Review worktree"]
         case .usage: ["Day by day", "Tokens", "Cost", "Meters in the title bar", "How many", "Show first",
                       "Near the limit", "Plan limit", "Warn about Claude Code", "Warn about Codex"]
@@ -111,11 +116,11 @@ enum SettingsSection: String, CaseIterable, Identifiable {
                              "Manage Control Rooms", "Receive files from devices", "Show received files",
                              "Pair with a password", "Generate password", "Password lifetime",
                              "Ask before opening terminals", "Trusted folders", "Remove trust", "Stay ready",
-                             "Stay awake during remote viewing"]
+                             "Stay awake during remote viewing", "Show services on my devices", "Share the clipboard with my devices"]
         case .sharing: ["Shared panes", "View & control", "View only", "Private", "Remote access to this pane"]
         case .theme: ["Window theme", "Minimum terminal contrast", "Dim inactive panes", "Pane border", "Focused pane",
                       "Show message trails", "Use curved trails", "Trail pattern", "Trail width", "Trail color"] + AppTheme.presets.map(\.name)
-        case .terminal: ["Font size", "Open agent panes as a chat", "Chat colors", "Copy when selecting text",
+        case .terminal: ["Font size", "Open agent panes as a chat", "Chat colors", "Copy when selecting text", "Allow remote programs to set the clipboard",
                          "Balance after adding a pane", "Balance when opening saved tabs", "Balance this tab now", "panes across", "panes down", "Speak into a pane", "Hold a key to dictate", "Hold key", "Right Option", "Speech language", "Apple speech service", "Manage Claude Code status line", "Claude status line"]
         case .tour: ["Welcome steps", "Show the welcome again", "Onboarding"]
         case .shortcuts: ["Your key combinations", "Change", "Restore all defaults", "Navigation and standard keys"]
@@ -177,6 +182,7 @@ struct SettingsView: View {
         switch section {
         case .general: GeneralSettings()
         case .notifications: NotificationsSettings()
+        case .services: ServicesSettings()
         case .agents: AgentsSettings()
         case .usage: UsageSettings()
         case .remoteAccess: RemoteAccessSettings()

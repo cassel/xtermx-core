@@ -47,6 +47,51 @@ import XTermXNIO
     }
 
     /// What a Linux node does: the NIO client, and a pairing whose first address is dead.
+    @Test func devServerInAPaneIsPreviewedThroughALoopbackTunnelOnlyWhenShared() async throws {
+        let manager = PaneManager()
+        let server = RemoteServer(manager: manager, port: 48_916, httpPort: 48_917, secretStore: MemorySecretStore())
+        server.start()
+        defer { server.stop() }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("TUNNEL_OK".utf8).write(to: root.appendingPathComponent("index.html"))
+        let port: UInt16 = 48_918
+        let pane = manager.spawn(SpawnRequest(kind: .shell, cwd: root.path,
+                                              initialInput: "exec python3 -m http.server \(port) --bind 127.0.0.1"))
+        defer { manager.close(pane.id) }
+        #expect(await waitUntil(20) { server.devServers.ports(for: pane.id).contains { $0.port == port } })
+
+        let client = HostConnection(pairing: server.pairing(address: "127.0.0.1"), deviceName: "phone", platform: .iOS)
+        client.connect()
+        defer { client.disconnect() }
+        #expect(await waitUntil { client.supportsTunnels })
+        #expect(client.devServers.isEmpty)
+        #expect(client.openTunnel(port: port, events: .init(opened: {}, received: { _ in }, closed: { _ in })) == nil)
+
+        server.permissions.shareDevServers = true
+        #expect(await waitUntil { client.devServers.contains { $0.port == port && $0.paneID == pane.id } })
+        // A request carried over the paired connection, as the web view's scheme handler sends it.
+        var status: Int?, body = Data(), outcome: String?? = .none
+        let fetch = DevServerFetch(connection: client, port: port, paneID: pane.id, method: "GET", target: "/index.html",
+                                   headers: ["Accept": "text/html"], body: nil,
+                                   handlers: .init(response: { status = $0.status }, data: { body.append($0) }, finished: { outcome = .some($0) }))
+        #expect(await waitUntil { outcome != nil })
+        #expect(status == 200 && outcome == .some(nil))
+        #expect(String(decoding: body, as: UTF8.self) == "TUNNEL_OK")
+        _ = fetch
+
+        // The port is shared for its own pane only.
+        #expect(client.openTunnel(port: port, paneID: "other", events: .init(opened: {}, received: { _ in }, closed: { _ in })) == nil)
+
+        // Revoking while a stream is open or still connecting closes it.
+        var closed: String??
+        _ = client.openTunnel(port: port, paneID: pane.id, events: .init(opened: {}, received: { _ in }, closed: { closed = .some($0) }))
+        server.permissions.shareDevServers = false
+        #expect(await waitUntil { closed != nil })
+        #expect(await waitUntil { client.devServers.isEmpty })
+    }
+
     @Test func linuxClientFallsBackToTheNextAddress() async throws {
         let manager = PaneManager(detectAgents: false)
         let server = RemoteServer(manager: manager, port: 48_914, httpPort: 48_915, secretStore: MemorySecretStore())

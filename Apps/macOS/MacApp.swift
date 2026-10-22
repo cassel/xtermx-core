@@ -1,4 +1,5 @@
 import AppKit
+import Network
 import Observation
 import SwiftUI
 import UserNotifications
@@ -88,6 +89,7 @@ enum RightTab: String, CaseIterable, Identifiable {
     case controlRoom = "Control Room"
     case agents = "Agents"
     case devices = "Devices"
+    case network = "Network"
     var id: String { rawValue }
 }
 
@@ -190,6 +192,9 @@ final class AppModel {
 
     /// Mac, Telegram and Slack notices when an agent is done or needs you (Settings › Notifications).
     let notifier = AgentNotifier()
+    let clipboard = MacClipboardBridge()
+    /// Tells paired devices this Mac's new addresses when its network changes.
+    @ObservationIgnored private let pathMonitor = NWPathMonitor()
     /// Tokens and API-price cost of every agent session on this Mac (title bar meters, the Usage popover).
     let meter = UsageMeterModel()
     let remoteAwake = RemoteAwakeController()
@@ -239,6 +244,8 @@ final class AppModel {
            let history = try? JSONDecoder().decode(DeviceHistory.self, from: data) { deviceHistory = history }
         manager.isolateAgents = UserDefaults.standard.bool(forKey: "xtermx.agents.isolate")
         server = RemoteServer(manager: manager)
+        server.devServers.start()
+        server.services.start()
         tools = MCPServer(manager: manager, agentHistory: FileSecretStore.defaultDirectory.appendingPathComponent("agent-history.json"),
                           watchMachine: true)
         server.onDeviceVerified = { [weak self] device in
@@ -305,10 +312,21 @@ final class AppModel {
         // The hooks call a fixed path; keep it pointing at this copy of the app.
         if let executable = Bundle.main.executablePath { try? AgentHookInstaller.writeLauncher(executable: executable) }
         agentHooksInstalled = AgentHookInstaller.isInstalled
+        // Hooks added in a newer version reach accounts that already had them on.
+        if agentHooksInstalled {
+            let manageLine = UserDefaults.standard.object(forKey: "xtermx.claude.status-line") as? Bool ?? true
+            _ = try? AgentHookInstaller.install(manageStatusLine: manageLine)
+        }
         meter.start()
         // Permission is asked when the person turns Mac notifications on, not at launch.
         notifier.hostName = manager.hostName
         notifier.onOpen = { [weak self] pane in self?.focus(pane) }
+        clipboard.start(server: server)
+        pathMonitor.pathUpdateHandler = { [weak self] _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.server.announceAddresses() } }
+        }
+        pathMonitor.start(queue: .global(qos: .utility))
+        server.services.onDown = { [weak self] status in self?.notifier.post(AgentNoticeText.serviceDown(status)) }
         notifier.isOnScreen = { [weak self] pane in
             guard let self, let pane else { return false }
             return NSApp.isActive && self.focusedPane == pane

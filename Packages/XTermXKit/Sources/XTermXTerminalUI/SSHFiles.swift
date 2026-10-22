@@ -54,7 +54,8 @@ extension SSHSession {
         }
     }
     /// Explicit SFTP upload, isolated from the interactive PTY, with bounded memory.
-    public func uploadFile(at source: URL, to path: String, maximumBytes: Int = SSHFileRules.uploadLimit) async throws {
+    public func uploadFile(at source: URL, to path: String, maximumBytes: Int = SSHFileRules.uploadLimit,
+                           progress: (@MainActor (Double) -> Void)? = nil) async throws {
         let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true, let size = values.fileSize,
               maximumBytes > 0, size <= maximumBytes else { throw FileFailure("Choose a regular file within the configured upload limit.") }
@@ -71,6 +72,7 @@ extension SSHSession {
                     }
                     try await file.write(ByteBuffer(bytes: data), at: UInt64(offset))
                     offset += data.count
+                    if let progress { let fraction = Double(offset) / Double(max(size, 1)); await MainActor.run { progress(fraction) } }
                 }
                 guard try reader.seekToEnd() == UInt64(size) else { throw FileFailure("The local file changed while uploading.") }
                 let remote = try await file.readAttributes()

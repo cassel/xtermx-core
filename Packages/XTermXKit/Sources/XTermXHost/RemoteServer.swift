@@ -216,6 +216,8 @@ public final class RemoteServer {
             if !permissions.sendFiles { fileChunks.cancelAll() }
             onPermissionsChanged?(permissions)
             for peer in peers.values where peer.sendSealer != nil { send(.permissions(permissions), to: peer) }
+            if permissions.shareDevServers != oldValue.shareDevServers { announceDevServers() }
+            if permissions.shareServices != oldValue.shareServices { announceServices() }
         }
     }
     public var allowRemoteSpawn: Bool {
@@ -246,6 +248,7 @@ public final class RemoteServer {
                 send(.snapshot(snapshotForDevices()), to: peer)
                 if permissions.manageRooms { send(.rooms(roomsForDevices()), to: peer) }
             }
+            if permissions.shareDevServers { announceDevServers() }
         }
     }
     @ObservationIgnored public var onSharingChanged: ((PaneSharingPolicy) -> Void)?
@@ -285,18 +288,27 @@ public final class RemoteServer {
     @ObservationIgnored public private(set) var port: UInt16
     @ObservationIgnored public private(set) var httpPort: UInt16
     @ObservationIgnored private let bindHost: String
+    /// Ports listening in local panes; the Mac shows them on pane headers, and shares them when the owner allows.
+    public let devServers: DevServerMonitor
+    /// Web addresses and ports the owner asked to watch.
+    public let services: ServiceMonitor
     #if os(macOS)
     @ObservationIgnored private var bonjour: NetService?
     #endif
 
     public init(manager: PaneManager, port: UInt16 = XTermXProtocol.defaultPort, httpPort: UInt16 = XTermXProtocol.defaultHTTPPort,
-                secretStore: SecretStore = HostIdentity.defaultStore, bindHost: String = "0.0.0.0") {
+                secretStore: SecretStore = HostIdentity.defaultStore, bindHost: String = "0.0.0.0",
+                services: ServiceMonitor? = nil) {
         self.manager = manager
         self.port = port
         self.httpPort = httpPort
         self.store = secretStore
         self.secret = HostIdentity.secret(secretStore)
         self.bindHost = bindHost
+        self.devServers = DevServerMonitor(manager: manager)
+        self.services = services ?? ServiceMonitor()
+        self.services.onChange = { [weak self] _ in self?.announceServices() }
+        devServers.onChange = { [weak self] _ in self?.announceDevServers() }
     }
 
     public func pairing(address: String) -> PairingInfo {
@@ -305,8 +317,13 @@ public final class RemoteServer {
 
     /// A pairing that lists several ways in (Tailscale, LAN, public); clients try them in order.
     public func pairing(addresses: [String]) -> PairingInfo {
-        PairingInfo(hostName: manager.hostName, address: addresses.first ?? "", alternates: Array(addresses.dropFirst()),
-                    port: port, httpPort: httpPort, secret: secret)
+        var p = PairingInfo(hostName: manager.hostName, address: addresses.first ?? "", alternates: Array(addresses.dropFirst()),
+                            port: port, httpPort: httpPort, secret: secret)
+        if let wake = WakeOnLAN.localTarget() {
+            p.wakeMAC = wake.mac
+            p.wakeBroadcast = wake.broadcast
+        }
+        return p
     }
 
     public func rotateSecret() {
@@ -337,6 +354,7 @@ public final class RemoteServer {
         wsServer = ws
         httpServer = http
         listenerID = manager.addListener { [weak self] event in self?.broadcast(event) }
+        devServers.start()
         #if os(macOS)
         let service = NetService(domain: "local.", type: XTermXProtocol.bonjourType + ".", name: manager.hostName, port: Int32(port))
         service.publish()
@@ -358,7 +376,10 @@ public final class RemoteServer {
         bonjour?.stop()
         bonjour = nil
         #endif
-        for peer in peers.values { peer.connection.close() }
+        for peer in peers.values {
+            for stream in peer.tunnels.values { stream.close() }
+            peer.connection.close()
+        }
         peers.removeAll()
         deviceConnections.removeAll()
         if let listenerID { manager.removeListener(listenerID) }
@@ -377,6 +398,17 @@ public final class RemoteServer {
         var deviceID: String?
         var deviceName = "Paired device"
         var identityChallenge = Data()
+        var tunnels: [UUID: TCPStream] = [:]
+        /// What each open or connecting stream was allowed to reach.
+        var tunnelTargets: [UUID: TunnelTarget] = [:]
+        var pendingTunnels: Set<UUID> = []
+        /// The device asked for the Mac's clipboard changes.
+        var clipboardOptIn = false
+        /// Dev server bytes handed to the connection but not yet written to the socket, per stream.
+        var tunnelBytesInFlight: [UUID: Int] = [:]
+        var tunnelPendingBytes: Int {
+            tunnelBytesInFlight.values.reduce(0, +) + tunnels.values.reduce(0) { $0 + $1.pendingWriteBytes }
+        }
         init(connection: WSConnection) { self.connection = connection }
         var id: UUID { connection.id }
     }
@@ -395,6 +427,7 @@ public final class RemoteServer {
 
     private func drop(_ id: UUID) {
         spawnGate.cancel(source: id)
+        if let peer = peers[id] { for stream in peer.tunnels.values { stream.close() } }
         peers[id] = nil
         deviceConnections.removeAll { $0.id == id }
         fileChunks.cancelAll(owner: "ws:" + id.uuidString)
@@ -440,11 +473,11 @@ public final class RemoteServer {
                                        address: peer.connection.remoteAddress))
     }
 
-    private func send(_ message: HostMessage, to peer: Peer) {
+    private func send(_ message: HostMessage, to peer: Peer, written: (@Sendable () -> Void)? = nil) {
         guard var sealer = peer.sendSealer, let json = try? WireCoding.encoder().encode(message),
-              let frame = try? sealer.seal(json) else { return }
+              let frame = try? sealer.seal(json) else { written?(); return }
         peer.sendSealer = sealer
-        peer.connection.send(frame)
+        peer.connection.send(frame, written: written)
     }
 
     public func updateReceivedFileLimits(_ limits: ReceivedFileLimits) {
@@ -493,8 +526,12 @@ public final class RemoteServer {
     private func handle(_ message: ClientMessage, peer: Peer?, uploadOwner: String? = nil) -> [HostMessage] {
         switch message {
         case .snapshot:
-            var replies: [HostMessage] = [.snapshot(snapshotForDevices()), .permissions(permissions), .fileTransferSupport(maximumBytes: receivedFiles.limits.maximumFileBytes, chunkBytes: RemoteFileRules.chunkBytes)]
-            if let peer { replies.insert(.deviceChallenge(peer.identityChallenge), at: 0) }
+            var replies: [HostMessage] = [.snapshot(snapshotForDevices()), .permissions(permissions), .fileTransferSupport(maximumBytes: receivedFiles.limits.maximumFileBytes, chunkBytes: RemoteFileRules.chunkBytes),
+                                          .services(sharedServices), .addresses(currentAddresses)]
+            if let peer {
+                replies.insert(.deviceChallenge(peer.identityChallenge), at: 0)
+                replies.append(.devServers(sharedDevServers))
+            }
             return replies
         case .identifyDevice(let proof):
             guard let peer, let id = DeviceIdentity.verifiedID(proof, challenge: peer.identityChallenge),
@@ -580,7 +617,193 @@ public final class RemoteServer {
             return [.screen(paneID: id, lines: session.screenLines(max(1, min(lines, 80))))]
         case .ping(let date):
             return [.pong(date)]
+        case .tunnelOpen(let streamID, let port, let paneID):
+            return openTunnel(streamID, to: TunnelTarget(port: port, paneID: paneID), peer: peer)
+        case .tunnelData(let streamID, let data):
+            if let peer { writeTunnel(streamID, data, of: peer) }
+            return []
+        case .tunnelClose(let streamID):
+            if let peer { forgetTunnel(streamID, of: peer)?.close() }
+            return []
+        case .clipboardOptIn(let on):
+            peer?.clipboardOptIn = on
+            return []
+        case .clipboard(let text):
+            guard let peer, permissions.shareClipboard, peer.clipboardOptIn, ClipboardRules.accepts(text) else { return [] }
+            onClipboard?(text, peer.deviceName)
+            for other in peers.values where other !== peer && other.clipboardOptIn && other.sendSealer != nil {
+                send(.clipboard(text: text), to: other)
+            }
+            return []
         }
+    }
+
+    // MARK: Live addresses
+
+    /// The ways into this host right now; the Mac app may add its own (a public address).
+    @ObservationIgnored public var addressProvider: () -> [String] = { HostIdentity.addresses() } {
+        didSet { cachedAddresses = nil }
+    }
+    @ObservationIgnored private var cachedAddresses: [String]?
+    var currentAddresses: [String] {
+        if let cachedAddresses { return cachedAddresses }
+        let list = HostAddresses.valid(addressProvider())
+        cachedAddresses = list
+        return list
+    }
+
+    /// Reads the addresses again and tells connected devices when they changed (call on a network change).
+    public func announceAddresses() {
+        let old = cachedAddresses
+        cachedAddresses = nil
+        let now = currentAddresses
+        guard now != old, !now.isEmpty else { return }
+        for peer in peers.values where peer.sendSealer != nil { send(.addresses(now), to: peer) }
+    }
+
+    // MARK: Shared clipboard
+
+    /// Text a device put on the shared clipboard, and that device's name.
+    @ObservationIgnored public var onClipboard: ((String, String) -> Void)?
+
+    /// Sends the Mac's clipboard text to every device that opted in, while the owner shares the clipboard.
+    public func shareClipboard(_ text: String) {
+        guard permissions.shareClipboard, ClipboardRules.accepts(text) else { return }
+        for peer in peers.values where peer.clipboardOptIn && peer.sendSealer != nil { send(.clipboard(text: text), to: peer) }
+    }
+
+    // MARK: Services
+
+    /// What devices see of the service monitor: nothing unless the owner shares it.
+    public var sharedServices: [ServiceStatus] {
+        permissions.shareServices ? services.statuses : []
+    }
+
+    private func announceServices() {
+        let shared = sharedServices
+        for peer in peers.values where peer.sendSealer != nil { send(.services(shared), to: peer) }
+    }
+
+    // MARK: Dev server tunnels
+
+    /// Ports devices may open: none unless the owner shares dev servers, and only in panes devices may view.
+    public var sharedDevServers: [DevServerPort] {
+        guard permissions.shareDevServers else { return [] }
+        return devServers.ports.filter { paneSharing.access($0.paneID).canView }
+    }
+
+    private func announceDevServers() {
+        let shared = sharedDevServers
+        for peer in peers.values where peer.sendSealer != nil {
+            // Streams still connecting are cut too, so a revoke cannot be outrun by a slow connect.
+            for (id, target) in peer.tunnelTargets where !target.isAllowed(by: shared) {
+                closeTunnel(id, of: peer, reason: "The server stopped or is no longer shared.")
+            }
+            send(.devServers(shared), to: peer)
+        }
+    }
+
+    struct TunnelTarget: Equatable {
+        var port: UInt16
+        var paneID: String?
+        func isAllowed(by shared: [DevServerPort]) -> Bool { DevServerTunnelRules.allows(port: port, paneID: paneID, in: shared) }
+    }
+
+    /// Drops a stream from the peer's books and returns its socket, if it was open.
+    @discardableResult
+    private func forgetTunnel(_ id: UUID, of peer: Peer) -> TCPStream? {
+        peer.pendingTunnels.remove(id)
+        peer.tunnelTargets[id] = nil
+        peer.tunnelBytesInFlight[id] = nil
+        return peer.tunnels.removeValue(forKey: id)
+    }
+
+    private func closeTunnel(_ id: UUID, of peer: Peer, reason: String?) {
+        let known = peer.tunnels[id] != nil || peer.pendingTunnels.contains(id)
+        forgetTunnel(id, of: peer)?.close()
+        if known { send(.tunnelClosed(streamID: id, reason: reason), to: peer) }
+    }
+
+    /// Device bytes for the dev server; a stream whose server does not keep up is closed rather than buffered without end.
+    private func writeTunnel(_ id: UUID, _ data: Data, of peer: Peer) {
+        guard let stream = peer.tunnels[id] else { return }
+        guard peer.tunnelPendingBytes + data.count <= DevServerTunnelRules.maximumPendingBytesPerDevice, stream.write(data) else {
+            return closeTunnel(id, of: peer, reason: "The server is not keeping up with this preview.")
+        }
+    }
+
+    private func openTunnel(_ streamID: UUID, to target: TunnelTarget, peer: Peer?) -> [HostMessage] {
+        guard let peer else { return [.tunnelClosed(streamID: streamID, reason: "Previews need a live connection.")] }
+        guard target.isAllowed(by: sharedDevServers) else {
+            return [.tunnelClosed(streamID: streamID, reason: "This machine does not share port \(target.port).")]
+        }
+        guard peer.tunnels[streamID] == nil, !peer.pendingTunnels.contains(streamID),
+              peer.tunnels.count + peer.pendingTunnels.count < DevServerTunnelRules.maximumStreams else {
+            return [.tunnelClosed(streamID: streamID, reason: "Too many open previews.")]
+        }
+        peer.pendingTunnels.insert(streamID)
+        peer.tunnelTargets[streamID] = target
+        let port = target.port
+        let peerID = peer.id
+        Task { [weak self] in
+            let stream = try? await TCPStream.connect(port: Int(port), maximumPendingBytes: DevServerTunnelRules.maximumPendingBytesPerStream)
+            guard let self else { stream?.close(); return }
+            self.tunnelConnected(stream, streamID, to: target, peerID: peerID)
+        }
+        return []
+    }
+
+    private func tunnelConnected(_ stream: TCPStream?, _ streamID: UUID, to target: TunnelTarget, peerID: UUID) {
+        guard let peer = peers[peerID], peer.pendingTunnels.remove(streamID) != nil else { stream?.close(); return }
+        // Sharing may have been turned off while the connect was under way.
+        guard target.isAllowed(by: sharedDevServers) else {
+            stream?.close()
+            peer.tunnelTargets[streamID] = nil
+            return send(.tunnelClosed(streamID: streamID, reason: "This machine no longer shares port \(target.port)."), to: peer)
+        }
+        guard let stream else {
+            peer.tunnelTargets[streamID] = nil
+            return send(.tunnelClosed(streamID: streamID, reason: "Nothing answers on port \(target.port)."), to: peer)
+        }
+        peer.tunnels[streamID] = stream
+        send(.tunnelOpened(streamID: streamID), to: peer)
+        // Main-queue hops keep reads in order and ahead of the close.
+        stream.onData { [weak self] data in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.forwardTunnel(data, from: stream, streamID, peerID: peerID) } }
+        }
+        stream.onClose { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated {
+                guard let self, let peer = self.peers[peerID], peer.tunnels[streamID] === stream else { return }
+                self.closeTunnel(streamID, of: peer, reason: nil)
+            } }
+        }
+    }
+
+    /// Dev server bytes for the device. The next read waits until this chunk has been written to the
+    /// device's socket, so a slow device slows the server down instead of filling memory.
+    private func forwardTunnel(_ data: Data, from stream: TCPStream, _ streamID: UUID, peerID: UUID) {
+        guard let peer = peers[peerID], peer.tunnels[streamID] === stream else { return }
+        guard peer.tunnelPendingBytes + data.count <= DevServerTunnelRules.maximumPendingBytesPerDevice else {
+            return closeTunnel(streamID, of: peer, reason: "This device is not keeping up with the preview.")
+        }
+        peer.tunnelBytesInFlight[streamID, default: 0] += data.count
+        let count = data.count
+        let chunks = DevServerTunnelRules.chunks(data)
+        for (index, chunk) in chunks.enumerated() {
+            var written: (@Sendable () -> Void)?
+            if index == chunks.count - 1 {
+                written = { [weak self] in
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.tunnelChunkWritten(count, stream, streamID, peerID: peerID) } }
+                }
+            }
+            send(.tunnelData(streamID: streamID, data: chunk), to: peer, written: written)
+        }
+    }
+
+    private func tunnelChunkWritten(_ count: Int, _ stream: TCPStream, _ streamID: UUID, peerID: UUID) {
+        guard let peer = peers[peerID], peer.tunnels[streamID] === stream else { return }
+        peer.tunnelBytesInFlight[streamID] = max(0, (peer.tunnelBytesInFlight[streamID] ?? 0) - count)
+        stream.readNext()
     }
 
     private func spawn(_ request: SpawnRequest, deviceID: String?, name: String, source: UUID?) async -> [HostMessage] {
